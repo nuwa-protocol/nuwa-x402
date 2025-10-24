@@ -78,6 +78,8 @@ function createPaidToolMethod(
 					content: [{ type: "text", text: JSON.stringify(obj) }] as const,
 				} as const;
 			};
+			console.log("[x402-mcp-server] Tool request received");
+
 			const payment = extra._meta?.["x402/payment"];
 
 			const atomicAmountForAsset = processPriceToAtomicAmount(
@@ -102,7 +104,9 @@ function createPaidToolMethod(
 			};
 
 			if (!payment) {
-				console.log("payment is required");
+				console.log(
+					"[x402-mcp-server]Returning error response for requesting payment",
+				);
 				return makeErrorResponse({
 					x402Version,
 					error: "_meta.x402/payment is required",
@@ -110,10 +114,9 @@ function createPaidToolMethod(
 				}) as any; // I genuinely dont why this is needed
 			}
 
-			console.log("the request has payment metadata");
-
 			let decodedPayment: PaymentPayload;
 			try {
+				console.log("[x402-mcp-server]Decoding payment payload");
 				decodedPayment = exact.evm.decodePayment(z.string().parse(payment));
 				decodedPayment.x402Version = x402Version;
 			} catch (error) {
@@ -125,9 +128,13 @@ function createPaidToolMethod(
 				}) as any; // I genuinely dont why this is needed
 			}
 
-			console.log("decoded payment", decodedPayment);
+			console.log("[x402-mcp-server] Decoded Payment: \n", decodedPayment);
 
 			try {
+				console.log(
+					"[x402-mcp-server] Verifying payment with facilitator:",
+					config.facilitator.url,
+				);
 				const verification = await verify(decodedPayment, paymentRequirements);
 				if (!verification.isValid) {
 					console.log("verification failed", verification);
@@ -146,7 +153,9 @@ function createPaidToolMethod(
 				}) as any;
 			}
 
-			console.log("payment verification successful");
+			console.log(
+				"[x402-mcp-server] Payment verification successful. Executing tool...",
+			);
 
 			// Execute the tool
 			let result: ReturnType<ToolCallback<any>>;
@@ -171,7 +180,9 @@ function createPaidToolMethod(
 				};
 			}
 
-			console.log("tool execution successful");
+			console.log(
+				"[x402-mcp-server] Tool execution successful. Settling payment...",
+			);
 
 			// Only settle payment if execution was successful
 			if (!executionError) {
@@ -200,6 +211,8 @@ function createPaidToolMethod(
 					}) as any;
 				}
 			}
+
+			console.log("[x402-mcp-server] Payment Settled Return result to client.");
 
 			return result;
 		};
