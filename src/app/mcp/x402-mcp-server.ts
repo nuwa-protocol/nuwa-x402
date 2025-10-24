@@ -10,12 +10,21 @@ import { exact } from "x402/schemes";
 import { processPriceToAtomicAmount } from "x402/shared";
 import type {
 	ERC20TokenAmount,
-	FacilitatorConfig,
 	PaymentPayload,
 	PaymentRequirements,
 } from "x402/types";
 import { useFacilitator } from "x402/verify";
 import z, { type ZodRawShape } from "zod";
+
+export interface FacilitatorConfig {
+	url: `${string}://${string}`;
+	createAuthHeaders: () => Promise<{
+		verify: Record<string, string>;
+		settle: Record<string, string>;
+		supported: Record<string, string>;
+		list?: Record<string, string>;
+	}>;
+}
 
 const x402Version = 1;
 
@@ -219,7 +228,7 @@ export function createPaidMcpHandler(
 	const paidHandler = createMcpHandler(
 		// Wrap the initialization to use ExtendedMcpServer
 		async (server) => {
-			const extendedServer = new Proxy(server, {
+			const extendedServer = new Proxy(server as unknown as PaymentMcpServer, {
 				get(target, prop, receiver) {
 					if (prop === "paidTool") {
 						return createPaidToolMethod(target, config);

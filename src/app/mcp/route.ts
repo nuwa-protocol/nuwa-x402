@@ -1,10 +1,15 @@
 import { facilitator } from "@coinbase/x402";
+import { privateKeyToAccount } from "viem/accounts";
 import z from "zod";
-import { getOrCreateSellerAccount } from "@/lib/accounts";
-import { env } from "@/lib/env";
-import { createPaidMcpHandler } from "../../service/x402-mcp-server";
+import {
+	createPaidMcpHandler,
+	type FacilitatorConfig,
+} from "./x402-mcp-server";
 
-const sellerAccount = await getOrCreateSellerAccount();
+const sellerAccount = privateKeyToAccount(
+	process.env.SERVICE_PRIVATE_KEY as `0x${string}`,
+);
+const network = "base-sepolia";
 
 const handler = createPaidMcpHandler(
 	(server) => {
@@ -60,37 +65,14 @@ const handler = createPaidMcpHandler(
 	},
 	{
 		recipient: sellerAccount.address,
-		facilitator,
-		network: env.NETWORK,
+		facilitator: facilitator as unknown as FacilitatorConfig,
+		network,
 	},
 );
 
 const localhostPrefixes = ["http://localhost", "http://127.0.0.1"];
 
-const allowedOrigins = new Set(
-	[env.URL?.replace(/\/$/, ""), ...localhostPrefixes].filter(Boolean),
-);
-
-function resolveOrigin(request: Request) {
-	const incomingOrigin = request.headers.get("origin")?.replace(/\/$/, "");
-	if (!incomingOrigin) {
-		return env.URL;
-	}
-
-	// Allow localhost during development without requiring extra env config.
-	if (localhostPrefixes.some((prefix) => incomingOrigin.startsWith(prefix))) {
-		return incomingOrigin;
-	}
-
-	return allowedOrigins.has(incomingOrigin) ? incomingOrigin : undefined;
-}
-
 function applyCorsHeaders(request: Request, response: Response) {
-	const origin = resolveOrigin(request);
-	if (!origin) {
-		return response;
-	}
-
 	response.headers.set("Access-Control-Allow-Origin", origin);
 	response.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
 
@@ -110,11 +92,6 @@ async function withCors(request: Request) {
 }
 
 export async function OPTIONS(request: Request) {
-	const origin = resolveOrigin(request);
-	if (!origin) {
-		return new Response(null, { status: 403 });
-	}
-
 	const response = new Response(null, { status: 204 });
 	response.headers.set("Access-Control-Allow-Origin", origin);
 	response.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
