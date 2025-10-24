@@ -5,11 +5,16 @@ import {
 	createPaidMcpHandler,
 	type FacilitatorConfig,
 } from "./x402-mcp-server";
+import { env } from "@/lib/env";
+import {
+	applyCorsHeaders,
+	createCorsPreflightResponse,
+} from "@/lib/cors";
 
 const sellerAccount = privateKeyToAccount(
-	process.env.SERVICE_PRIVATE_KEY as `0x${string}`,
+	env.SERVICE_PRIVATE_KEY as `0x${string}`,
 );
-const network = "base-sepolia";
+const network = env.NETWORK;
 
 const handler = createPaidMcpHandler(
 	(server) => {
@@ -70,39 +75,13 @@ const handler = createPaidMcpHandler(
 	},
 );
 
-const localhostPrefixes = ["http://localhost", "http://127.0.0.1"];
-
-function applyCorsHeaders(request: Request, response: Response) {
-	response.headers.set("Access-Control-Allow-Origin", origin);
-	response.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-
-	const requestHeaders =
-		request.headers.get("access-control-request-headers") ??
-		"Content-Type,Authorization,X-Requested-With";
-	response.headers.set("Access-Control-Allow-Headers", requestHeaders);
-	response.headers.set("Access-Control-Max-Age", "86400");
-	response.headers.append("Vary", "Origin");
-
-	return response;
-}
-
 async function withCors(request: Request) {
 	const response = await handler(request);
 	return applyCorsHeaders(request, response);
 }
 
 export async function OPTIONS(request: Request) {
-	const response = new Response(null, { status: 204 });
-	response.headers.set("Access-Control-Allow-Origin", origin);
-	response.headers.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-	response.headers.set(
-		"Access-Control-Allow-Headers",
-		request.headers.get("access-control-request-headers") ??
-			"Content-Type,Authorization,X-Requested-With",
-	);
-	response.headers.set("Access-Control-Max-Age", "86400");
-	response.headers.append("Vary", "Origin");
-	return response;
+	return createCorsPreflightResponse(request);
 }
 
 export { withCors as GET, withCors as POST };
