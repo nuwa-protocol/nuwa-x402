@@ -1,8 +1,42 @@
 import { applyCorsHeaders } from "@/lib/cors";
 import { env } from "@/lib/env";
+import {
+	createPaymentPlugin,
+	type EnsurePaymentConfig,
+} from "./payment-plugin";
+import { privateKeyToAccount } from "viem/accounts";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai";
 const DEFAULT_TARGET_PATH = "/api/v1/chat/completions";
+const DEFAULT_PRICE = "$0.01";
+
+const serviceAccount = privateKeyToAccount(
+	env.SERVICE_PRIVATE_KEY as `0x${string}`,
+);
+const paymentPlugin = createPaymentPlugin();
+
+const defaultPaymentConfig: EnsurePaymentConfig = {
+	payTo: serviceAccount.address,
+	price: DEFAULT_PRICE,
+	network: env.NETWORK,
+	config: {
+		description: "Access to OpenRouter proxy",
+		mimeType: "application/json",
+	},
+};
+
+function resolvePaymentConfig(
+	overrides: Partial<EnsurePaymentConfig> = {},
+): EnsurePaymentConfig {
+	return {
+		...defaultPaymentConfig,
+		...overrides,
+		config: {
+			...defaultPaymentConfig.config,
+			...overrides.config,
+		},
+	} as EnsurePaymentConfig;
+}
 
 function buildForwardHeaders(request: Request) {
 	const headers = new Headers();
@@ -34,7 +68,26 @@ function resolveTargetPath(pathSegments: string[]) {
 export async function forwardOpenRouter(
 	request: Request,
 	pathSegments: string[] = [],
+	paymentOverrides: Partial<EnsurePaymentConfig> = {},
 ) {
+	const paymentConfig = resolvePaymentConfig({
+		...paymentOverrides,
+	});
+
+	const paymentResult = await paymentPlugin.ensurePayment(
+		request,
+		paymentConfig,
+	);
+
+	if (!paymentResult.ok) {
+		return applyCorsHeaders(request, paymentResult.response);
+	}
+
+	const finalizeResponse = async (original: Response) => {
+		const settlementResult = await paymentResult.settle(original);
+		return applyCorsHeaders(request, settlementResult.response);
+	};
+
 	const url = new URL(request.url);
 	const targetPath = resolveTargetPath(pathSegments);
 	const targetUrl = `${OPENROUTER_BASE_URL}${targetPath}${url.search}`;
@@ -69,7 +122,7 @@ export async function forwardOpenRouter(
 			status: 502,
 			headers: { "Content-Type": "application/json" },
 		});
-		return applyCorsHeaders(request, response);
+		return finalizeResponse(response);
 	}
 
 	const responseHeaders = new Headers(upstreamResponse.headers);
@@ -86,5 +139,5 @@ export async function forwardOpenRouter(
 		`[openrouter-proxy] Response ${upstreamResponse.status} ${upstreamResponse.statusText} for ${method} ${targetPath}`,
 	);
 
-	return applyCorsHeaders(request, response);
+	return finalizeResponse(response);
 }
