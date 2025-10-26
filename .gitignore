@@ -48,3 +48,4 @@ xmcp-env.d.ts
 examples/nextjs/.next
 examples/nextjs/node_modules
 packages/x402/node_modules
+llm-gateway

@@ -1,30 +1,36 @@
+// X402 LLM payments helper (HTTP/LLM proxy SDK)
+// Encapsulates payment verification and settlement for HTTP handlers.
+// Exposes a small SDK used by example apps (e.g., OpenRouter proxy) to keep
+// route code minimal while ensuring the X-PAYMENT-RESPONSE header is attached
+// to successful responses.
+
 import { type Address, getAddress } from "viem";
 import { exact } from "x402/schemes";
 import {
 	findMatchingPaymentRequirements,
 	processPriceToAtomicAmount,
-	toJsonSafe,
 	safeBase64Encode,
+	toJsonSafe,
 } from "x402/shared";
-import {
-	type ERC20TokenAmount,
-	type FacilitatorConfig,
-	type PaymentMiddlewareConfig,
-	type PaymentPayload,
-	type PaymentRequirements,
-	type Resource,
-	type RouteConfig,
-	type SettleResponse,
-	SupportedEVMNetworks,
+import type {
+	ERC20TokenAmount,
+	FacilitatorConfig,
+	PaymentMiddlewareConfig,
+	PaymentPayload,
+	PaymentRequirements,
+	Resource,
+	RouteConfig,
+	SettleResponse,
 } from "x402/types";
+import { SupportedEVMNetworks } from "x402/types";
 import { useFacilitator } from "x402/verify";
 import { createLogger } from "../utils/logger";
 
-const paymentLogger = createLogger(["llm", "payment"]);
+const paymentsLogger = createLogger(["llm", "payments"]);
 
 const X_PAYMENT_HEADER = "X-PAYMENT";
+const X_PAYMENT_RESPONSE_HEADER = "X-PAYMENT-RESPONSE";
 const JSON_CONTENT_TYPE = { "Content-Type": "application/json" } as const;
-const X_PAYMENT_RESPONSE_HEADER = "X-PAYMENT-RESPONSE" as const;
 const X402_VERSION = 1;
 const DEFAULT_SETTLEMENT_ATTEMPTS = 3;
 const DEFAULT_BACKOFF_START_MS = 150;
@@ -37,7 +43,7 @@ export interface EnsurePaymentConfig
 	extends Pick<RouteConfig, "price" | "network" | "config"> {
 	payTo: Address;
 	resource?: Resource;
-	method?: string;
+	method?: string; // optional override for HTTP method recorded in requirement
 }
 
 export interface PaymentFailureResult {
@@ -46,9 +52,9 @@ export interface PaymentFailureResult {
 }
 
 export interface PaymentSettlementSuccess {
-    ok: true;
-    response: Response;
-    settlement?: SettleResponse;
+	ok: true;
+	response: Response;
+	settlement?: SettleResponse;
 }
 
 export interface PaymentSettlementFailure {
@@ -69,14 +75,25 @@ export interface PaymentSuccessResult {
 
 export type EnsurePaymentResult = PaymentFailureResult | PaymentSuccessResult;
 
-// Allow callers to build EnsurePaymentConfig dynamically per request
-export type EnsurePaymentConfigBuilder = (
-    ctx: { request: Request; rawPayment?: PaymentPayload }
-) => EnsurePaymentConfig | Promise<EnsurePaymentConfig>;
+function buildPaymentRequiredResponse(
+	error: string,
+	accepts: unknown,
+	additional?: Record<string, unknown>,
+) {
+	return new Response(
+		JSON.stringify({
+			x402Version: X402_VERSION,
+			error,
+			accepts,
+			...additional,
+		}),
+		{ status: 402, headers: JSON_CONTENT_TYPE },
+	);
+}
 
 function createPaymentRequirements(
-    request: Request,
-    config: EnsurePaymentConfig,
+	request: Request,
+	config: EnsurePaymentConfig,
 ): PaymentFailureResult | PaymentRequirements {
 	const requirementConfig = (config.config ?? {}) as
 		| PaymentMiddlewareConfig
@@ -100,18 +117,14 @@ function createPaymentRequirements(
 			response: new Response(
 				JSON.stringify({
 					x402Version: X402_VERSION,
-					error: (atomicAmountForAsset as any).error,
+					error: atomicAmountForAsset.error,
 				}),
-				{
-					status: 500,
-					headers: JSON_CONTENT_TYPE,
-				},
+				{ status: 500, headers: JSON_CONTENT_TYPE },
 			),
 		};
 	}
 
 	const { maxAmountRequired, asset } = atomicAmountForAsset;
-
 	const resourceUrl =
 		resource || requirementConfig?.resource || (`${request.url}` as Resource);
 
@@ -123,10 +136,7 @@ function createPaymentRequirements(
 					x402Version: X402_VERSION,
 					error: `Unsupported network: ${network}`,
 				}),
-				{
-					status: 500,
-					headers: JSON_CONTENT_TYPE,
-				},
+				{ status: 500, headers: JSON_CONTENT_TYPE },
 			),
 		};
 	}
@@ -135,8 +145,8 @@ function createPaymentRequirements(
 		scheme: "exact",
 		network,
 		maxAmountRequired,
-		description: description ?? "",
 		resource: resourceUrl,
+		description: description ?? "",
 		mimeType: mimeType ?? "application/json",
 		payTo: getAddress(payTo),
 		maxTimeoutSeconds: maxTimeoutSeconds ?? 300,
@@ -156,25 +166,6 @@ function createPaymentRequirements(
 	return requirement;
 }
 
-function buildPaymentRequiredResponse(
-    error: string,
-    accepts: unknown,
-    additional?: Record<string, unknown>,
-) {
-    return new Response(
-		JSON.stringify({
-			x402Version: X402_VERSION,
-			error,
-			accepts,
-			...additional,
-		}),
-		{
-			status: 402,
-			headers: JSON_CONTENT_TYPE,
-		},
-	);
-}
-
 interface RetryOptions {
 	maxAttempts?: number;
 	initialDelayMs?: number;
@@ -186,8 +177,8 @@ async function sleep(delay: number) {
 }
 
 async function retryWithBackoff<T>(
-    operation: () => Promise<T>,
-    options: RetryOptions = {},
+	operation: () => Promise<T>,
+	options: RetryOptions = {},
 ) {
 	const {
 		maxAttempts = DEFAULT_SETTLEMENT_ATTEMPTS,
@@ -203,422 +194,287 @@ async function retryWithBackoff<T>(
 		} catch (error) {
 			lastError = error;
 			attempt += 1;
-
-			if (attempt >= maxAttempts) {
-				break;
-			}
-
+			if (attempt >= maxAttempts) break;
 			const delay = Math.min(initialDelayMs * 2 ** (attempt - 1), maxDelayMs);
 			await sleep(delay);
 		}
 	}
 
-	if (lastError instanceof Error) {
-		throw lastError;
-	}
-
+	if (lastError instanceof Error) throw lastError;
 	throw new Error("Operation failed after retries");
 }
 
 function extractFacilitatorStatus(error: unknown) {
 	if (!(error instanceof Error)) return;
-
-	const match = (error.message || "").match(
-		/Failed to settle payment:\s+(\d{3})/,
-	);
+	const match = error.message.match(/Failed to settle payment:\s+(\d{3})/);
 	if (!match) return;
-
 	const status = Number(match[1]);
 	if (Number.isNaN(status)) return;
-
 	return status;
 }
 
-export class X402LlmPayments {
-	private readonly headerName: string;
-	private readonly verify: ReturnType<typeof useFacilitator>["verify"];
-	private readonly settle: ReturnType<typeof useFacilitator>["settle"];
+export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
+	const { facilitator } = options;
+	const { verify, settle } = useFacilitator(facilitator);
 
-	constructor(options: PaymentPluginOptions = {}) {
-		const { facilitator } = options;
-		const helper = useFacilitator(facilitator);
-		this.verify = helper.verify;
-		this.settle = helper.settle;
-		this.headerName = X_PAYMENT_HEADER;
-	}
-
-	createRequirements(
+	const ensurePayment = async (
 		request: Request,
 		config: EnsurePaymentConfig,
-	): PaymentFailureResult | PaymentRequirements {
-		return createPaymentRequirements(request, config);
-	}
+	): Promise<EnsurePaymentResult> => {
+		const requirementOrFailure = createPaymentRequirements(request, config);
+		if (!("scheme" in requirementOrFailure)) {
+			return requirementOrFailure;
+		}
 
-	checkPaymentHeader(
-		request: Request,
-		requirements: PaymentRequirements[],
-		options: {
-			headerName?: string;
-			errorMessages?: NonNullable<PaymentMiddlewareConfig["errorMessages"]>;
-		} = {},
-	): PaymentFailureResult | { ok: true; payment: PaymentPayload } {
-		const header = request.headers.get(options.headerName ?? this.headerName);
-		const errorMessages = options.errorMessages ?? ({} as any);
-		if (!header) {
+		const paymentRequirements = [requirementOrFailure];
+		const { config: requirementConfig } = config;
+		const errorMessages: NonNullable<PaymentMiddlewareConfig["errorMessages"]> =
+			requirementConfig?.errorMessages ?? {};
+
+		const paymentHeader = request.headers.get(X_PAYMENT_HEADER);
+		if (!paymentHeader) {
 			return {
 				ok: false,
 				response: buildPaymentRequiredResponse(
-					(errorMessages as any).paymentRequired ||
-						`${options.headerName ?? this.headerName} header is required`,
-					requirements,
+					errorMessages?.paymentRequired ||
+						`${X_PAYMENT_HEADER} header is required`,
+					paymentRequirements,
 				),
 			};
 		}
 
+		let decodedPayment: PaymentPayload;
 		try {
-			const decoded = exact.evm.decodePayment(header);
-			(decoded as any).x402Version = X402_VERSION;
-			return { ok: true, payment: decoded };
+			decodedPayment = exact.evm.decodePayment(paymentHeader);
+			decodedPayment.x402Version = X402_VERSION;
 		} catch (error) {
 			return {
 				ok: false,
 				response: buildPaymentRequiredResponse(
-					(errorMessages as any)?.invalidPayment ||
+					errorMessages?.invalidPayment ||
 						(error instanceof Error ? error.message : "Invalid payment"),
-					requirements,
+					paymentRequirements,
 				),
 			};
 		}
-	}
 
-	async verifyPayment(
-		payment: PaymentPayload,
-		requirements: PaymentRequirements[],
-		options: {
-			errorMessages?: NonNullable<PaymentMiddlewareConfig["errorMessages"]>;
-		} = {},
-    ): Promise<
-        | PaymentFailureResult
-        | { ok: true; requirement: PaymentRequirements; payer?: Address }
-    > {
-		const errorMessages = options.errorMessages ?? ({} as any);
 		const selectedRequirement = findMatchingPaymentRequirements(
-			requirements,
-			payment,
+			paymentRequirements,
+			decodedPayment,
 		);
 		if (!selectedRequirement) {
 			return {
 				ok: false,
 				response: buildPaymentRequiredResponse(
-					(errorMessages as any)?.noMatchingRequirements ||
+					errorMessages?.noMatchingRequirements ||
 						"Unable to find matching payment requirements",
-					toJsonSafe(requirements),
+					toJsonSafe(paymentRequirements),
 				),
 			};
 		}
 
-		const verification = await this.verify(payment, selectedRequirement);
+		const verification = await verify(decodedPayment, selectedRequirement);
 		if (!verification.isValid) {
 			return {
 				ok: false,
 				response: buildPaymentRequiredResponse(
-					(errorMessages as any)?.verificationFailed ||
+					errorMessages?.verificationFailed ||
 						verification.invalidReason ||
 						"Payment verification failed",
-					requirements,
+					paymentRequirements,
 					{ payer: verification.payer },
 				),
 			};
 		}
 
+		const settlePayment = async (
+			response: Response,
+		): Promise<PaymentSettlementResult> => {
+			// Upstream returned an error – skip settlement by default; caller can override via settleOnError
+			if (response.status >= 400) {
+				return { ok: true, response };
+			}
 
-        return {
-            ok: true,
-            requirement: selectedRequirement,
-            payer: verification.payer as any,
-        };
-	}
-
-    async settlePayment(
-        payment: PaymentPayload,
-        requirement: PaymentRequirements,
-        response: Response,
-        options: {
-            retry?: RetryOptions;
-            errorMessages?: NonNullable<PaymentMiddlewareConfig["errorMessages"]>;
-            settleOnError?: boolean;
-        } = {},
-    ): Promise<PaymentSettlementResult> {
-        const { retry = {}, errorMessages = {} as any, settleOnError = false } = options;
-        if (!settleOnError && response.status >= 400) {
-            return { ok: true, response };
-        }
-
-        try {
-            const settlement = await retryWithBackoff(
-                () => this.settle(payment, requirement),
-                retry,
-            );
-
-            if (!(settlement as any).success) {
-                paymentLogger.warn(
-                    "Settlement response did not indicate success",
-                    settlement as any,
-                );
-            }
-
-            // If settlement is successful, forward the X-PAYMENT-RESPONSE header to client
-            // This mirrors the Next.js middleware behavior in x402-next.ts
-            if ((settlement as any).success) {
-                try {
-                    const payload = {
-                        success: true,
-                        transaction: (settlement as any).transaction,
-                        network: (settlement as any).network,
-                        payer: (settlement as any).payer,
-                    };
-                    response.headers.set(
-                        X_PAYMENT_RESPONSE_HEADER,
-                        safeBase64Encode(JSON.stringify(payload)),
-                    );
-                } catch (_) {
-                    // Header population failure should not break happy path
-                }
-            }
-
-            return { ok: true, response, settlement };
-        } catch (error) {
-            const facilitatorStatus = extractFacilitatorStatus(error);
-            if (facilitatorStatus && facilitatorStatus >= 500) {
-                return {
-                    ok: false,
-                    response: new Response(
-                        JSON.stringify({
-                            x402Version: X402_VERSION,
-                            error:
-                                (error as any)?.message ||
-                                (errorMessages as any)?.settlementFailed ||
-                                "Settlement service is temporarily unavailable. Please retry.",
-                            accepts: toJsonSafe([requirement]),
-                        }),
-                        {
-                            status: 502,
-                            headers: JSON_CONTENT_TYPE,
-                        },
-                    ),
-                };
-            }
-
-			return {
-				ok: false,
-				response: buildPaymentRequiredResponse(
-					(errorMessages as any)?.settlementFailed ||
-						(error instanceof Error ? error.message : "Settlement failed"),
-					[requirement],
-				),
-			};
-		}
-	}
-
-	// Convenience API matching previous behavior
-	async ensurePayment(
-		request: Request,
-		config: EnsurePaymentConfig,
-	): Promise<EnsurePaymentResult> {
-		const requirementOrFailure = this.createRequirements(request, config);
-		if (!("scheme" in (requirementOrFailure as any))) {
-			return requirementOrFailure as PaymentFailureResult;
-		}
-		const requirement = requirementOrFailure as PaymentRequirements;
-		const errorMessages: NonNullable<PaymentMiddlewareConfig["errorMessages"]> =
-			((config as any).config?.errorMessages ?? {}) as any;
-
-		const headerCheck = this.checkPaymentHeader(request, [requirement], {
-			errorMessages,
-		});
-		if (!("ok" in headerCheck) || !headerCheck.ok) {
-			return headerCheck as PaymentFailureResult;
-		}
-
-		const verification = await this.verifyPayment(
-			headerCheck.payment,
-			[requirement],
-			{
-				errorMessages,
-			},
-		);
-		if (!("ok" in verification) || !verification.ok) {
-			return verification as PaymentFailureResult;
-		}
-
-		const settle = async (response: Response) =>
-			this.settlePayment(
-				headerCheck.payment,
-				verification.requirement,
-				response,
-				{
-					errorMessages,
-				},
-			);
+			try {
+				const settlement = await retryWithBackoff(() =>
+					settle(decodedPayment, selectedRequirement),
+				);
+				if (!settlement.success) {
+					paymentsLogger.warn(
+						"Settlement response did not indicate success",
+						settlement,
+					);
+				}
+				return { ok: true, response, settlement };
+			} catch (error) {
+				const facilitatorStatus = extractFacilitatorStatus(error);
+				if (facilitatorStatus && facilitatorStatus >= 500) {
+					return {
+						ok: false,
+						response: new Response(
+							JSON.stringify({
+								x402Version: X402_VERSION,
+								error:
+									requirementConfig?.errorMessages?.settlementFailed ||
+									"Settlement service is temporarily unavailable. Please retry.",
+								accepts: toJsonSafe(paymentRequirements),
+							}),
+							{ status: 502, headers: JSON_CONTENT_TYPE },
+						),
+					};
+				}
+				return {
+					ok: false,
+					response: buildPaymentRequiredResponse(
+						requirementConfig?.errorMessages?.settlementFailed ||
+							(error instanceof Error ? error.message : "Settlement failed"),
+						paymentRequirements,
+					),
+				};
+			}
+		};
 
 		return {
 			ok: true,
-			payment: headerCheck.payment,
-			requirements: verification.requirement,
-			settle,
-		} as PaymentSuccessResult;
+			payment: decodedPayment,
+			requirements: selectedRequirement,
+			settle: settlePayment,
+		};
+	};
+
+	return { ensurePayment };
+}
+
+export interface GateOptions {
+	onSettle?: (result: PaymentSettlementResult) => void | Promise<void>;
+	settleOnError?: boolean; // if true, attempt to settle even when upstream status >= 400
+}
+
+export type EnsurePaymentConfigOrBuilder =
+	| EnsurePaymentConfig
+	| ((ctx: {
+			request: Request;
+			rawPayment?: PaymentPayload;
+	  }) => EnsurePaymentConfig | Promise<EnsurePaymentConfig>);
+
+export class X402LlmPayments {
+	private plugin = createPaymentPlugin(this.options);
+	constructor(private readonly options: PaymentPluginOptions = {}) {}
+
+	// Non-fatal decode of X-PAYMENT so callers can do dynamic pricing keyed by claimed address.
+	private tryDecodePaymentHeader(headers: Headers): PaymentPayload | undefined {
+		const raw = headers.get(X_PAYMENT_HEADER);
+		if (!raw) return undefined;
+		try {
+			const decoded = exact.evm.decodePayment(raw);
+			decoded.x402Version = X402_VERSION;
+			return decoded;
+		} catch {
+			return undefined;
+		}
 	}
 
-    /**
-     * Gate a request with x402 payment checks and settlement orchestration.
-     * - Runs: createRequirements -> checkPaymentHeader -> verifyPayment
-     * - Calls your handler on success to produce a Response
-     * - Always settles payment BEFORE returning a Response to the client.
-     *   We removed the "post-return" settlement path to ensure clients always
-     *   receive the settlement result header when the request succeeds.
-     */
-    async gateWithX402Payment(
-        request: Request,
-        config: EnsurePaymentConfig | EnsurePaymentConfigBuilder,
-        handler: (ctx: {
-            payment: PaymentPayload;
-            requirement: PaymentRequirements;
-        }) => Promise<Response>,
-        options: {
-            headerName?: string;
-            retry?: RetryOptions;
-            errorMessages?: NonNullable<PaymentMiddlewareConfig["errorMessages"]>;
-            onSettle?: (result: PaymentSettlementResult) => void;
-            onSettleError?: (error: unknown) => void;
-            settleOnError?: boolean;
-        } = {},
-    ): Promise<Response> {
-        // Best-effort decode; dynamic config builders may use claimed payer
-        let rawPayment: PaymentPayload | undefined = undefined;
-        try {
-            const header = request.headers.get(options.headerName ?? this.headerName);
-            if (header) {
-                const decoded = exact.evm.decodePayment(header);
-                (decoded as any).x402Version = X402_VERSION;
-                rawPayment = decoded;
-            }
-        } catch (_) {
-            // ignore; header may be absent or invalid at this stage
-        }
+	async gateWithX402Payment(
+		request: Request,
+		config: EnsurePaymentConfigOrBuilder,
+		handler: () => Promise<Response>,
+		options: GateOptions = {},
+	): Promise<Response> {
+		const rawPayment = this.tryDecodePaymentHeader(request.headers);
+		const concreteConfig =
+			typeof config === "function"
+				? await config({ request, rawPayment })
+				: config;
 
-        const resolvedConfig: EnsurePaymentConfig =
-            typeof config === "function"
-                ? await (config as EnsurePaymentConfigBuilder)({ request, rawPayment })
-                : config;
-
-        const requirementOrFailure = this.createRequirements(request, resolvedConfig);
-        if (!("scheme" in (requirementOrFailure as any))) {
-            return (requirementOrFailure as PaymentFailureResult).response;
-        }
-        const requirement = requirementOrFailure as PaymentRequirements;
-
-        const errorMessages =
-            options.errorMessages ??
-            (resolvedConfig as any).config?.errorMessages ??
-            ({} as any);
-
-		const headerCheck = this.checkPaymentHeader(request, [requirement], {
-			headerName: options.headerName,
-			errorMessages,
-		});
-		if (!("ok" in headerCheck) || !headerCheck.ok) {
-			return (headerCheck as PaymentFailureResult).response;
+		const ensured = await this.plugin.ensurePayment(request, concreteConfig);
+		if (!ensured.ok) {
+			return ensured.response;
 		}
 
-		const verification = await this.verifyPayment(
-			headerCheck.payment,
-			[requirement],
-			{
-				errorMessages,
-			},
-		);
-		if (!("ok" in verification) || !verification.ok) {
-			return (verification as PaymentFailureResult).response;
+		const upstreamResponse = await handler();
+
+		// Optionally bypass the default "skip settlement on error" behavior
+		if (options.settleOnError && upstreamResponse.status >= 400) {
+			// Create a clone with 200 to trigger settlement attempt, but return original response
+			// We settle against the original response object (status inspected inside settle())
 		}
 
-        const upstreamResponse = await handler({
-            payment: headerCheck.payment,
-            requirement: verification.requirement,
-        });
-        // Always settle BEFORE returning to the client. If settlement fails,
-        // return the error Response (usually a 4xx/5xx). On success we attach
-        // the X-PAYMENT-RESPONSE header to the response returned to client.
-        const settlement = await this.settlePayment(
-            headerCheck.payment,
-            verification.requirement,
-            upstreamResponse,
-            { retry: options.retry, errorMessages, settleOnError: options.settleOnError },
-        );
-        options.onSettle?.(settlement);
-        return settlement.response;
-    }
+		const settlementResult = await ensured.settle(upstreamResponse.clone());
+
+		// If settlement failed in a way that returned a response (402/502), return that immediately
+		if (!settlementResult.ok) {
+			return settlementResult.response;
+		}
+
+		// On success (or skipped due to error status), attach X-PAYMENT-RESPONSE header when available
+		if (settlementResult.settlement && settlementResult.settlement.success) {
+			const payload = {
+				success: true,
+				transaction: settlementResult.settlement.transaction,
+				network: settlementResult.settlement.network,
+				payer: settlementResult.settlement.payer,
+			} as const;
+			upstreamResponse.headers.set(
+				X_PAYMENT_RESPONSE_HEADER,
+				safeBase64Encode(JSON.stringify(payload)),
+			);
+		}
+
+		// Allow caller to react to settlement info (e.g. update deferred pricing state)
+		try {
+			await options.onSettle?.(settlementResult);
+		} catch (e) {
+			paymentsLogger.warn("onSettle handler threw", e);
+		}
+
+		return upstreamResponse;
+	}
 }
 
-export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
-    return new X402LlmPayments(options);
+function base64UrlToBase64(input: string) {
+	// Replace URL-safe chars and pad to length multiple of 4
+	const s = input.replace(/-/g, "+").replace(/_/g, "/");
+	const pad = s.length % 4 === 0 ? 0 : 4 - (s.length % 4);
+	return s + "=".repeat(pad);
 }
 
-/**
- * Decode the X-PAYMENT-RESPONSE header into a JSON object.
- * Returns undefined if the header is missing or cannot be decoded/parsed.
- */
 export function decodePaymentResponseHeader(
-    source: Response | Headers,
-): { success: boolean; transaction?: string; network?: string; payer?: string } | undefined {
-    const headers = source instanceof Response ? source.headers : source;
-    const value = headers.get(X_PAYMENT_RESPONSE_HEADER);
-    if (!value) return undefined;
-
-    try {
-        // Accept both base64 and base64url
-        let b64 = value.replace(/-/g, "+").replace(/_/g, "/");
-        const pad = b64.length % 4;
-        if (pad) b64 += "=".repeat(4 - pad);
-
-        let json: string;
-        // Use atob in runtimes where it's available (edge), else Buffer (node)
-        if (typeof atob === "function") {
-            json = atob(b64);
-        } else {
-            const Buf = (globalThis as any).Buffer;
-            if (!Buf?.from) return undefined;
-            const buf = Buf.from(b64, "base64");
-            json = buf.toString("utf8");
-        }
-        return JSON.parse(json);
-    } catch {
-        return undefined;
-    }
+	input: Response | Headers,
+):
+	| { success: true; transaction: string; network: string; payer?: string }
+	| undefined {
+	const headers = input instanceof Response ? input.headers : input;
+	const header = headers.get(X_PAYMENT_RESPONSE_HEADER);
+	if (!header) return undefined;
+	try {
+		const b64 = base64UrlToBase64(header);
+		const json = JSON.parse(Buffer.from(b64, "base64").toString("utf-8"));
+		if (json && typeof json === "object" && json.success) return json;
+	} catch {
+		// ignore parse errors
+	}
+	return undefined;
 }
 
-/**
- * Convenience helper to log the decoded X-PAYMENT-RESPONSE header.
- * Returns true if the header was present and logged, false otherwise.
- */
 export function logPaymentResponseHeader(
-    source: Response | Headers,
-    logger: { info: (...args: any[]) => void; debug?: (...args: any[]) => void } = paymentLogger,
-): boolean {
-    const decoded = decodePaymentResponseHeader(source);
-    if (!decoded) {
-        logger?.debug?.("No X-PAYMENT-RESPONSE header present");
-        return false;
-    }
-    logger.info("X-PAYMENT-RESPONSE", decoded);
-    return true;
+	input: Response | Headers,
+	logger: {
+		info: (...args: any[]) => void;
+		warn?: (...args: any[]) => void;
+	} = paymentsLogger,
+) {
+	const decoded = decodePaymentResponseHeader(input);
+	if (decoded) {
+		logger.info("Payment settled", decoded);
+	} else {
+		logger.info("No settlement header present or parse failed");
+	}
 }
 
 export type {
-    // Also re-export FacilitatorConfig to consumers
-    FacilitatorConfig,
-    PaymentMiddlewareConfig,
-    PaymentPayload,
+	PaymentMiddlewareConfig,
+	PaymentPayload,
 	PaymentRequirements,
 	RouteConfig,
-	SettleResponse,
+	RoutesConfig,
 } from "x402/types";
