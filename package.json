@@ -7,5 +7,8 @@
     "build": "pnpm -C examples/nextjs build",
     "start": "pnpm -C examples/nextjs start",
     "typecheck": "pnpm -C examples/nextjs typecheck"
+  },
+  "devDependencies": {
+    "next": "15.5.2"
   }
 }
