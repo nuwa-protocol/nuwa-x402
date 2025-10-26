@@ -3,7 +3,6 @@ import { exact } from "x402/schemes";
 import {
 	findMatchingPaymentRequirements,
 	processPriceToAtomicAmount,
-	safeBase64Encode,
 	toJsonSafe,
 } from "x402/shared";
 import {
@@ -19,9 +18,10 @@ import {
 import { useFacilitator } from "x402/verify";
 
 const X_PAYMENT_HEADER = "X-PAYMENT";
-const X_PAYMENT_RESPONSE_HEADER = "X-PAYMENT-RESPONSE";
 const JSON_CONTENT_TYPE = { "Content-Type": "application/json" };
 const X402_VERSION = 1;
+const DEFAULT_SETTLEMENT_ATTEMPTS = 3;
+const DEFAULT_BACKOFF_START_MS = 150;
 
 export interface PaymentPluginOptions {
 	facilitator?: FacilitatorConfig;
@@ -163,6 +163,69 @@ function buildPaymentRequiredResponse(
 	);
 }
 
+interface RetryOptions {
+	maxAttempts?: number;
+	initialDelayMs?: number;
+	maxDelayMs?: number;
+}
+
+async function sleep(delay: number) {
+	await new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+async function retryWithBackoff<T>(
+	operation: () => Promise<T>,
+	options: RetryOptions = {},
+) {
+	const {
+		maxAttempts = DEFAULT_SETTLEMENT_ATTEMPTS,
+		initialDelayMs = DEFAULT_BACKOFF_START_MS,
+		maxDelayMs = 1000,
+	} = options;
+	let attempt = 0;
+	let lastError: unknown;
+
+	while (attempt < maxAttempts) {
+		try {
+			return await operation();
+		} catch (error) {
+			lastError = error;
+			attempt += 1;
+
+			if (attempt >= maxAttempts) {
+				break;
+			}
+
+			const delay = Math.min(initialDelayMs * 2 ** (attempt - 1), maxDelayMs);
+			await sleep(delay);
+		}
+	}
+
+	if (lastError instanceof Error) {
+		throw lastError;
+	}
+
+	throw new Error("Operation failed after retries");
+}
+
+function extractFacilitatorStatus(error: unknown) {
+	if (!(error instanceof Error)) {
+		return;
+	}
+
+	const match = error.message.match(/Failed to settle payment:\s+(\d{3})/);
+	if (!match) {
+		return;
+	}
+
+	const status = Number(match[1]);
+	if (Number.isNaN(status)) {
+		return;
+	}
+
+	return status;
+}
+
 export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 	const { facilitator } = options;
 	const { verify, settle } = useFacilitator(facilitator);
@@ -248,24 +311,39 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 			}
 
 			try {
-				const settlement = await settle(decodedPayment, selectedRequirement);
+				const settlement = await retryWithBackoff(
+					() => settle(decodedPayment, selectedRequirement),
+				);
 
-				if (settlement.success) {
-					response.headers.set(
-						X_PAYMENT_RESPONSE_HEADER,
-						safeBase64Encode(
-							JSON.stringify({
-								success: true,
-								transaction: settlement.transaction,
-								network: settlement.network,
-								payer: settlement.payer,
-							}),
-						),
+				if (!settlement.success) {
+					console.warn(
+						"[payment-plugin] Settlement response did not indicate success",
+						settlement,
 					);
 				}
 
 				return { ok: true, response };
 			} catch (error) {
+				const facilitatorStatus = extractFacilitatorStatus(error);
+				if (facilitatorStatus && facilitatorStatus >= 500) {
+					return {
+						ok: false,
+						response: new Response(
+							JSON.stringify({
+								x402Version: X402_VERSION,
+								error:
+									errorMessages?.settlementFailed ||
+									"Settlement service is temporarily unavailable. Please retry.",
+								accepts: toJsonSafe(paymentRequirements),
+							}),
+							{
+								status: 502,
+								headers: JSON_CONTENT_TYPE,
+							},
+						),
+					};
+				}
+
 				return {
 					ok: false,
 					response: buildPaymentRequiredResponse(

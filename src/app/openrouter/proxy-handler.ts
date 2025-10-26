@@ -83,9 +83,30 @@ export async function forwardOpenRouter(
 		return applyCorsHeaders(request, paymentResult.response);
 	}
 
-	const finalizeResponse = async (original: Response) => {
-		const settlementResult = await paymentResult.settle(original);
-		return applyCorsHeaders(request, settlementResult.response);
+	const finalizeResponse = (original: Response) => {
+		const responseWithCors = applyCorsHeaders(request, original);
+
+		if (paymentResult.ok) {
+			paymentResult
+				.settle(responseWithCors.clone())
+				.then((settlementResult) => {
+					console.log(
+						"[openrouter-proxy] Settlement finished",
+						JSON.stringify({
+							ok: settlementResult.ok,
+							responseStatus: settlementResult.response.status,
+						}),
+					);
+				})
+				.catch((error) =>
+					console.error(
+						"[openrouter-proxy] Failed to settle payment after response sent",
+						error,
+					),
+				);
+		}
+
+		return responseWithCors;
 	};
 
 	const url = new URL(request.url);
