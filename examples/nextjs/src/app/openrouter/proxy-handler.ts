@@ -1,12 +1,12 @@
 import {
-    type EnsurePaymentConfig,
-    type PaymentSettlementResult,
-    X402LlmPayments,
-    logPaymentResponseHeader,
+	type EnsurePaymentConfig,
+	type PaymentSettlementResult,
+	X402LlmPayments,
+	logPaymentResponseHeader,
 } from "@nuwa-ai/x402/llm";
 import { privateKeyToAccount } from "viem/accounts";
 import { applyCorsHeaders } from "@/lib/cors";
-import { env } from "@/lib/env";
+import { getEnv } from "@/lib/env";
 import { createLogger } from "@/lib/logger";
 
 const proxyLogger = createLogger(["openrouter", "proxy"]);
@@ -16,24 +16,40 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai";
 const DEFAULT_TARGET_PATH = "/api/v1/chat/completions";
 const DEFAULT_PRICE = "$0.01";
 
-const serviceAccount = privateKeyToAccount(
-	env.SERVICE_PRIVATE_KEY as `0x${string}`,
-);
 const payments = new X402LlmPayments();
 
-const defaultPaymentConfig: EnsurePaymentConfig = {
-	payTo: serviceAccount.address,
-	price: DEFAULT_PRICE,
-	network: env.NETWORK,
-	config: {
-		description: "Access to OpenRouter proxy",
-		mimeType: "application/json",
-	},
-};
+let cachedServiceAccount:
+	| ReturnType<typeof privateKeyToAccount>
+	| null = null;
+
+function getServiceAccount() {
+	if (!cachedServiceAccount) {
+		const { SERVICE_PRIVATE_KEY } = getEnv();
+		cachedServiceAccount = privateKeyToAccount(
+			SERVICE_PRIVATE_KEY as `0x${string}`,
+		);
+	}
+	return cachedServiceAccount;
+}
+
+function getDefaultPaymentConfig(): EnsurePaymentConfig {
+	const env = getEnv();
+	const account = getServiceAccount();
+	return {
+		payTo: account.address,
+		price: DEFAULT_PRICE,
+		network: env.NETWORK,
+		config: {
+			description: "Access to OpenRouter proxy",
+			mimeType: "application/json",
+		},
+	};
+}
 
 function resolvePaymentConfig(
 	overrides: Partial<EnsurePaymentConfig> = {},
 ): EnsurePaymentConfig {
+	const defaultPaymentConfig = getDefaultPaymentConfig();
 	return {
 		...defaultPaymentConfig,
 		...overrides,
@@ -45,6 +61,7 @@ function resolvePaymentConfig(
 }
 
 function buildForwardHeaders(request: Request) {
+	const { OPENROUTER_API_KEY } = getEnv();
 	const headers = new Headers();
 	for (const [key, value] of request.headers.entries()) {
 		if (["host", "content-length"].includes(key.toLowerCase())) {
@@ -57,7 +74,7 @@ function buildForwardHeaders(request: Request) {
 		headers.set("x-title", "x402-openrouter-proxy");
 	}
 
-	headers.set("Authorization", `Bearer ${env.OPENROUTER_API_KEY}`);
+	headers.set("Authorization", `Bearer ${OPENROUTER_API_KEY}`);
 
 	return headers;
 }
@@ -160,18 +177,18 @@ export async function forwardOpenRouter(
 		return response;
 	};
 
-    const paymentGated = await payments.gateWithX402Payment(
-        request,
-        paymentConfig,
-        () => makeUpstream(),
-        {
-            onSettle,
-        },
-    );
+	const paymentGated = await payments.gateWithX402Payment(
+		request,
+		paymentConfig,
+		() => makeUpstream(),
+		{
+			onSettle,
+		},
+	);
 
-    // Log the X-PAYMENT-RESPONSE header (if present) for observability
-    // This works in conjunction with the middleware always settling before return.
-    logPaymentResponseHeader(paymentGated, settlementLogger);
+	// Log the X-PAYMENT-RESPONSE header (if present) for observability.
+	// This works in conjunction with the middleware always settling before return.
+	logPaymentResponseHeader(paymentGated, settlementLogger);
 
-    return finalizeResponse(paymentGated);
+	return finalizeResponse(paymentGated);
 }

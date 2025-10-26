@@ -2,80 +2,91 @@ import { facilitator } from "@coinbase/x402";
 import { privateKeyToAccount } from "viem/accounts";
 import z from "zod";
 import {
-  createPaidMcpHandler,
-  type FacilitatorConfig,
+	createPaidMcpHandler,
+	type FacilitatorConfig,
 } from "@nuwa-ai/x402/mcp";
-import { env } from "@/lib/env";
+import { getEnv } from "@/lib/env";
 import {
 	applyCorsHeaders,
 	createCorsPreflightResponse,
 } from "@/lib/cors";
 
-const sellerAccount = privateKeyToAccount(
-	env.SERVICE_PRIVATE_KEY as `0x${string}`,
-);
-const network = env.NETWORK;
+let cachedHandler:
+	| ReturnType<typeof createPaidMcpHandler>
+	| null = null;
 
-const handler = createPaidMcpHandler(
-	(server) => {
-		server.paidTool(
-			"get_random_number",
-			"Get a random number between two numbers",
-			{ price: 0.001 },
-			{
-				min: z.number().int(),
-				max: z.number().int(),
+function getHandler() {
+	if (!cachedHandler) {
+		const env = getEnv();
+		const sellerAccount = privateKeyToAccount(
+			env.SERVICE_PRIVATE_KEY as `0x${string}`,
+		);
+		cachedHandler = createPaidMcpHandler(
+			(server) => {
+				server.paidTool(
+					"get_random_number",
+					"Get a random number between two numbers",
+					{ price: 0.001 },
+					{
+						min: z.number().int(),
+						max: z.number().int(),
+					},
+					{},
+					async (args) => {
+						const randomNumber =
+							Math.floor(Math.random() * (args.max - args.min + 1)) +
+							args.min;
+						return {
+							content: [{ type: "text", text: randomNumber.toString() }],
+						};
+					},
+				);
+				server.paidTool(
+					"add",
+					"Add two numbers",
+					{ price: 0.001 },
+					{
+						a: z.number().int(),
+						b: z.number().int(),
+					},
+					{},
+					async (args) => {
+						const result = args.a + args.b;
+						return {
+							content: [{ type: "text", text: result.toString() }],
+						};
+					},
+				);
+				server.tool(
+					"hello-remote",
+					"Receive a greeting",
+					{
+						name: z.string(),
+					},
+					async (args) => {
+						return { content: [{ type: "text", text: `Hello ${args.name}` }] };
+					},
+				);
 			},
-			{},
-			async (args) => {
-				const randomNumber =
-					Math.floor(Math.random() * (args.max - args.min + 1)) + args.min;
-				return {
-					content: [{ type: "text", text: randomNumber.toString() }],
-				};
+			{
+				serverInfo: {
+					name: "test-mcp",
+					version: "0.0.1",
+				},
+			},
+			{
+				recipient: sellerAccount.address,
+				facilitator: facilitator as unknown as FacilitatorConfig,
+				network: env.NETWORK,
 			},
 		);
-		server.paidTool(
-			"add",
-			"Add two numbers",
-			{ price: 0.001 },
-			{
-				a: z.number().int(),
-				b: z.number().int(),
-			},
-			{},
-			async (args) => {
-				const result = args.a + args.b;
-				return {
-					content: [{ type: "text", text: result.toString() }],
-				};
-			},
-		);
-		server.tool(
-			"hello-remote",
-			"Receive a greeting",
-			{
-				name: z.string(),
-			},
-			async (args) => {
-				return { content: [{ type: "text", text: `Hello ${args.name}` }] };
-			},
-		);
-	},
-	{
-		serverInfo: {
-			name: "test-mcp",
-			version: "0.0.1",
-		},
-	},
-	{
-		recipient: sellerAccount.address,
-		facilitator: facilitator as unknown as FacilitatorConfig,
-		network,
-	},
-);
+	}
+
+	return cachedHandler;
+}
 
 async function withCors(request: Request) {
+	const handler = getHandler();
 	const response = await handler(request);
 	return applyCorsHeaders(request, response);
 }

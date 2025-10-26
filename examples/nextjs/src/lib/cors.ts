@@ -1,19 +1,20 @@
-import { env } from "@/lib/env";
+import { getEnv } from "@/lib/env";
 
 const localhostPrefixes = ["http://localhost", "http://127.0.0.1"];
 
 export function resolveAllowedOrigin(request: Request) {
+	const { ALLOWED_ORIGIN } = getEnv();
 	const requestOrigin = request.headers.get("origin");
 	if (requestOrigin) {
 		const isLocalhost = localhostPrefixes.some((prefix) =>
 			requestOrigin.startsWith(prefix),
 		);
-		if (isLocalhost || requestOrigin === env.ALLOWED_ORIGIN) {
+		if (isLocalhost || (ALLOWED_ORIGIN && requestOrigin === ALLOWED_ORIGIN)) {
 			return requestOrigin;
 		}
 	}
 
-	return env.ALLOWED_ORIGIN ?? "*";
+	return ALLOWED_ORIGIN ?? "*";
 }
 
 export function applyCorsHeaders(request: Request, response: Response) {

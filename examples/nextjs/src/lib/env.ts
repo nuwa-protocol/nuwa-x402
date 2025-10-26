@@ -12,11 +12,36 @@ const envSchema = z.object({
 	OPENROUTER_API_KEY: z.string().min(1),
 });
 
-const parsed = envSchema.parse({
-	SERVICE_PRIVATE_KEY: process.env.SERVICE_PRIVATE_KEY,
-	NETWORK: process.env.NETWORK,
-	ALLOWED_ORIGIN: process.env.ALLOWED_ORIGIN,
-	OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-});
+type Env = z.infer<typeof envSchema>;
 
-export const env = parsed;
+let cachedEnv: Env | null = null;
+
+function parseEnv(): Env {
+	const result = envSchema.safeParse({
+		SERVICE_PRIVATE_KEY: process.env.SERVICE_PRIVATE_KEY,
+		NETWORK: process.env.NETWORK,
+		ALLOWED_ORIGIN: process.env.ALLOWED_ORIGIN,
+		OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
+	});
+
+	if (!result.success) {
+		const issues = result.error.issues
+			.map((issue) => {
+				const path = issue.path.join(".") || "(root)";
+				return `${path}: ${issue.message}`;
+			})
+			.join("; ");
+		throw new Error(`Invalid environment configuration: ${issues}`);
+	}
+
+	return result.data;
+}
+
+export function getEnv(): Env {
+	if (!cachedEnv) {
+		cachedEnv = parseEnv();
+	}
+	return cachedEnv;
+}
+
+export type { Env };
