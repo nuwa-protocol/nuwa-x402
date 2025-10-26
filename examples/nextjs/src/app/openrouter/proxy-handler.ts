@@ -1,8 +1,8 @@
 import {
 	type EnsurePaymentConfig,
+	logPaymentResponseHeader,
 	type PaymentSettlementResult,
 	X402LlmPayments,
-	logPaymentResponseHeader,
 } from "@nuwa-ai/x402/llm";
 import { privateKeyToAccount } from "viem/accounts";
 import { applyCorsHeaders } from "@/lib/cors";
@@ -18,9 +18,7 @@ const DEFAULT_PRICE = "$0.01";
 
 const payments = new X402LlmPayments();
 
-let cachedServiceAccount:
-	| ReturnType<typeof privateKeyToAccount>
-	| null = null;
+let cachedServiceAccount: ReturnType<typeof privateKeyToAccount> | null = null;
 
 function getServiceAccount() {
 	if (!cachedServiceAccount) {
