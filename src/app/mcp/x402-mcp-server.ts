@@ -15,6 +15,9 @@ import type {
 } from "x402/types";
 import { useFacilitator } from "x402/verify";
 import z, { type ZodRawShape } from "zod";
+import { createLogger } from "@/lib/logger";
+
+const mcpLogger = createLogger(["mcp", "x402"]);
 
 export interface FacilitatorConfig {
 	url: `${string}://${string}`;
@@ -69,6 +72,7 @@ function createPaidToolMethod(
 		annotations,
 		cb,
 	) => {
+		const toolLogger = mcpLogger.child(name);
 		const cbWithPayment: ToolCallback<any> = async (args, extra) => {
 			const { verify, settle } = useFacilitator(config.facilitator);
 			const makeErrorResponse = (obj: Record<string, unknown>) => {
@@ -78,7 +82,7 @@ function createPaidToolMethod(
 					content: [{ type: "text", text: JSON.stringify(obj) }] as const,
 				} as const;
 			};
-			console.log("[x402-mcp-server] Tool request received");
+			toolLogger.info("Tool request received");
 
 			const payment = extra._meta?.["x402/payment"];
 
@@ -104,9 +108,7 @@ function createPaidToolMethod(
 			};
 
 			if (!payment) {
-				console.log(
-					"[x402-mcp-server]Returning error response for requesting payment",
-				);
+				toolLogger.warn("No payment header found; returning payment required");
 				return makeErrorResponse({
 					x402Version,
 					error: "_meta.x402/payment is required",
@@ -116,11 +118,11 @@ function createPaidToolMethod(
 
 			let decodedPayment: PaymentPayload;
 			try {
-				console.log("[x402-mcp-server]Decoding payment payload");
+				toolLogger.debug("Decoding payment payload");
 				decodedPayment = exact.evm.decodePayment(z.string().parse(payment));
 				decodedPayment.x402Version = x402Version;
 			} catch (error) {
-				console.log("error", error);
+				toolLogger.error("Failed to decode payment payload", error);
 				return makeErrorResponse({
 					x402Version,
 					error: "Invalid payment",
@@ -128,16 +130,16 @@ function createPaidToolMethod(
 				}) as any; // I genuinely dont why this is needed
 			}
 
-			console.log("[x402-mcp-server] Decoded Payment: \n", decodedPayment);
+			toolLogger.debug("Decoded payment payload", decodedPayment);
 
 			try {
-				console.log(
-					"[x402-mcp-server] Verifying payment with facilitator:",
+				toolLogger.info(
+					"Verifying payment with facilitator",
 					config.facilitator.url,
 				);
 				const verification = await verify(decodedPayment, paymentRequirements);
 				if (!verification.isValid) {
-					console.log("verification failed", verification);
+					toolLogger.warn("Payment verification failed", verification);
 					return makeErrorResponse({
 						x402Version,
 						error: verification.invalidReason,
@@ -146,16 +148,14 @@ function createPaidToolMethod(
 					}) as any;
 				}
 			} catch (error) {
-				console.log("verification error", error);
+				toolLogger.error("Payment verification threw", error);
 				return makeErrorResponse({
 					x402Version,
 					error: `Verification failed: ${error}`,
 				}) as any;
 			}
 
-			console.log(
-				"[x402-mcp-server] Payment verification successful. Executing tool...",
-			);
+			toolLogger.info("Payment verification successful. Executing tool...");
 
 			// Execute the tool
 			let result: ReturnType<ToolCallback<any>>;
@@ -172,7 +172,7 @@ function createPaidToolMethod(
 					executionError = true;
 				}
 			} catch (error) {
-				console.log("execution error", error);
+				toolLogger.error("Tool execution error", error);
 				executionError = true;
 				result = {
 					isError: true,
@@ -180,9 +180,7 @@ function createPaidToolMethod(
 				};
 			}
 
-			console.log(
-				"[x402-mcp-server] Tool execution successful. Settling payment...",
-			);
+			toolLogger.info("Tool execution completed. Settling payment...");
 
 			// Only settle payment if execution was successful
 			if (!executionError) {
@@ -203,7 +201,7 @@ function createPaidToolMethod(
 					}
 				} catch (settlementError) {
 					// If settlement fails, we should probably not return the result
-					console.log("settlement error", settlementError);
+					toolLogger.error("Settlement failed", settlementError);
 					return makeErrorResponse({
 						x402Version,
 						error: `Settlement failed: ${settlementError}`,
@@ -212,7 +210,7 @@ function createPaidToolMethod(
 				}
 			}
 
-			console.log("[x402-mcp-server] Payment Settled Return result to client.");
+			toolLogger.info("Payment settled. Returning result to client.");
 
 			return result;
 		};

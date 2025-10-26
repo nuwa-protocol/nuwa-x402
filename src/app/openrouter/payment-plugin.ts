@@ -1,4 +1,5 @@
 import { type Address, getAddress } from "viem";
+import { createLogger } from "@/lib/logger";
 import { exact } from "x402/schemes";
 import {
 	findMatchingPaymentRequirements,
@@ -13,9 +14,12 @@ import {
 	type PaymentRequirements,
 	type Resource,
 	type RouteConfig,
+	type SettleResponse,
 	SupportedEVMNetworks,
 } from "x402/types";
 import { useFacilitator } from "x402/verify";
+
+const paymentLogger = createLogger(["openrouter", "payment"]);
 
 const X_PAYMENT_HEADER = "X-PAYMENT";
 const JSON_CONTENT_TYPE = { "Content-Type": "application/json" };
@@ -42,6 +46,7 @@ export interface PaymentFailureResult {
 export interface PaymentSettlementSuccess {
 	ok: true;
 	response: Response;
+	settlement?: SettleResponse;
 }
 
 export interface PaymentSettlementFailure {
@@ -315,14 +320,14 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 					() => settle(decodedPayment, selectedRequirement),
 				);
 
-				if (!settlement.success) {
-					console.warn(
-						"[payment-plugin] Settlement response did not indicate success",
-						settlement,
-					);
-				}
+					if (!settlement.success) {
+						paymentLogger.warn(
+							"Settlement response did not indicate success",
+							settlement,
+						);
+					}
 
-				return { ok: true, response };
+				return { ok: true, response, settlement };
 			} catch (error) {
 				const facilitatorStatus = extractFacilitatorStatus(error);
 				if (facilitatorStatus && facilitatorStatus >= 500) {

@@ -1,10 +1,14 @@
 import { privateKeyToAccount } from "viem/accounts";
+import { createLogger } from "@/lib/logger";
 import { applyCorsHeaders } from "@/lib/cors";
 import { env } from "@/lib/env";
 import {
 	createPaymentPlugin,
 	type EnsurePaymentConfig,
 } from "./payment-plugin";
+
+const proxyLogger = createLogger(["openrouter", "proxy"]);
+const settlementLogger = proxyLogger.child("settlement");
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai";
 const DEFAULT_TARGET_PATH = "/api/v1/chat/completions";
@@ -90,17 +94,26 @@ export async function forwardOpenRouter(
 			paymentResult
 				.settle(responseWithCors.clone())
 				.then((settlementResult) => {
-					console.log(
-						"[openrouter-proxy] Settlement finished",
-						JSON.stringify({
-							ok: settlementResult.ok,
-							responseStatus: settlementResult.response.status,
-						}),
-					);
+					const logPayload: Record<string, unknown> = {
+						ok: settlementResult.ok,
+						responseStatus: settlementResult.response.status,
+					};
+
+					if (settlementResult.ok && settlementResult.settlement) {
+						logPayload.transaction = settlementResult.settlement.transaction;
+						logPayload.network = settlementResult.settlement.network;
+						logPayload.payer = settlementResult.settlement.payer;
+					}
+
+					if (settlementResult.ok) {
+						settlementLogger.info("Settlement finished", logPayload);
+					} else {
+						settlementLogger.warn("Settlement failed", logPayload);
+					}
 				})
 				.catch((error) =>
-					console.error(
-						"[openrouter-proxy] Failed to settle payment after response sent",
+					settlementLogger.error(
+						"Failed to settle payment after response sent",
 						error,
 					),
 				);
@@ -125,18 +138,19 @@ export async function forwardOpenRouter(
 		init.duplex = "half";
 	}
 
-	console.log(
-		`[openrouter-proxy] Forwarding ${method} ${targetPath}${url.search}\n ${JSON.stringify(request.body)}`,
+	proxyLogger.info(
+		`Forwarding ${method} ${targetPath}${url.search}`,
+		JSON.stringify(request.body),
 	);
 
 	let upstreamResponse: Response;
 	try {
 		upstreamResponse = await fetch(targetUrl, init);
-	} catch (error) {
-		console.error(
-			`[openrouter-proxy] Upstream request failed for ${method} ${targetPath}`,
-			error,
-		);
+		} catch (error) {
+			proxyLogger.error(
+				`Upstream request failed for ${method} ${targetPath}`,
+				error,
+			);
 		const message =
 			error instanceof Error ? error.message : "Failed to reach OpenRouter";
 		const response = new Response(JSON.stringify({ error: message }), {
@@ -146,8 +160,9 @@ export async function forwardOpenRouter(
 		return finalizeResponse(response);
 	}
 
-	console.log(
-		`[openrouter-proxy] Upstream response ${upstreamResponse.status} ${upstreamResponse.statusText} for ${method} ${targetPath}\n ${JSON.stringify(upstreamResponse.body)}`,
+	proxyLogger.info(
+		`Upstream response ${upstreamResponse.status} ${upstreamResponse.statusText} for ${method} ${targetPath}`,
+		JSON.stringify(upstreamResponse.body),
 	);
 
 	const responseHeaders = new Headers(upstreamResponse.headers);
@@ -162,8 +177,8 @@ export async function forwardOpenRouter(
 		headers: responseHeaders,
 	});
 
-	console.log(
-		`[openrouter-proxy] Response ${upstreamResponse.status} ${upstreamResponse.statusText} for ${method} ${targetPath}`,
+	proxyLogger.info(
+		`Response ${upstreamResponse.status} ${upstreamResponse.statusText} for ${method} ${targetPath}`,
 	);
 
 	return finalizeResponse(response);
