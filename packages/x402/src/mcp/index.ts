@@ -63,6 +63,7 @@ type ServerOptions = NonNullable<Parameters<typeof createMcpHandler>[1]>;
 function createPaidToolMethod(
 	server: McpServer,
 	config: ServerPaymentConfig,
+	request?: Request,
 ): PaymentMcpServer["paidTool"] {
 	const paidTool: PaymentMcpServer["paidTool"] = (
 		name,
@@ -94,6 +95,17 @@ function createPaidToolMethod(
 				throw new Error("Failed to process price to atomic amount");
 			}
 			const { maxAmountRequired, asset } = atomicAmountForAsset;
+
+			// Build resource URL using request URL if available
+			let resource: string;
+			if (request) {
+				const url = new URL(request.url);
+				const baseUrl = `${url.protocol}//${url.host}${url.pathname}`;
+				resource = `mcptool://${name}@${baseUrl}`;
+			} else {
+				resource = `mcptool://${name}@https://api.xnuwa.app/mcp`;
+			}
+
 			const paymentRequirements: PaymentRequirements = {
 				scheme: "exact",
 				network: config.network,
@@ -101,7 +113,7 @@ function createPaidToolMethod(
 				payTo: config.recipient,
 				asset: asset.address,
 				maxTimeoutSeconds: 300,
-				resource: `mcp://tool/${name}`,
+				resource,
 				mimeType: "application/json",
 				description,
 				extra: (asset as ERC20TokenAmount["asset"]).eip712,
@@ -253,7 +265,31 @@ export function createPaidMcpHandler(
 		config,
 	);
 
-	return paidHandler;
+	// Wrap the handler to capture request information
+	return async (request: Request) => {
+		// Create a new handler for this specific request
+		const requestHandler = createMcpHandler(
+			async (server) => {
+				const extendedServer = new Proxy(
+					server as unknown as PaymentMcpServer,
+					{
+						get(target, prop, receiver) {
+							if (prop === "paidTool") {
+								return createPaidToolMethod(target, config, request);
+							}
+							return Reflect.get(target, prop, receiver);
+						},
+					},
+				) as PaymentMcpServer;
+
+				await initializeServer(extendedServer);
+			},
+			serverOptions,
+			config,
+		);
+
+		return requestHandler(request);
+	};
 }
 
 export type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
