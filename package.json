@@ -4,7 +4,7 @@
   "packageManager": "pnpm@9.15.4",
   "scripts": {
     "dev": "pnpm -C examples/nextjs dev",
-    "build": "pnpm -C examples/nextjs build && node scripts/sync-next-output.mjs",
+    "build": "pnpm -C examples/nextjs build",
     "start": "pnpm -C examples/nextjs start",
     "typecheck": "pnpm -C examples/nextjs typecheck"
   },

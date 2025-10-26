@@ -8,6 +8,8 @@ if (!process.env.CI) {
 const nextConfig: NextConfig = {
   // Transpile the local workspace package so we can publish TS sources
   transpilePackages: ["@nuwa-ai/x402"],
+  // Emit the dist directory at the monorepo root so Vercel finds `.next`
+  distDir: "../../.next",
   typescript: { ignoreBuildErrors: true },
   eslint: { ignoreDuringBuilds: true },
 };
