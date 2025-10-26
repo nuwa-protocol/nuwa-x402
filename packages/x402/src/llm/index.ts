@@ -69,6 +69,11 @@ export interface PaymentSuccessResult {
 
 export type EnsurePaymentResult = PaymentFailureResult | PaymentSuccessResult;
 
+// Allow callers to build EnsurePaymentConfig dynamically per request
+export type EnsurePaymentConfigBuilder = (
+    ctx: { request: Request; rawPayment?: PaymentPayload }
+) => EnsurePaymentConfig | Promise<EnsurePaymentConfig>;
+
 function createPaymentRequirements(
     request: Request,
     config: EnsurePaymentConfig,
@@ -292,9 +297,10 @@ export class X402LlmPayments {
 		options: {
 			errorMessages?: NonNullable<PaymentMiddlewareConfig["errorMessages"]>;
 		} = {},
-	): Promise<
-		PaymentFailureResult | { ok: true; requirement: PaymentRequirements }
-	> {
+    ): Promise<
+        | PaymentFailureResult
+        | { ok: true; requirement: PaymentRequirements; payer?: Address }
+    > {
 		const errorMessages = options.errorMessages ?? ({} as any);
 		const selectedRequirement = findMatchingPaymentRequirements(
 			requirements,
@@ -325,7 +331,12 @@ export class X402LlmPayments {
 			};
 		}
 
-		return { ok: true, requirement: selectedRequirement };
+
+        return {
+            ok: true,
+            requirement: selectedRequirement,
+            payer: verification.payer as any,
+        };
 	}
 
     async settlePayment(
@@ -335,10 +346,11 @@ export class X402LlmPayments {
         options: {
             retry?: RetryOptions;
             errorMessages?: NonNullable<PaymentMiddlewareConfig["errorMessages"]>;
+            settleOnError?: boolean;
         } = {},
     ): Promise<PaymentSettlementResult> {
-        const { retry = {}, errorMessages = {} as any } = options;
-        if (response.status >= 400) {
+        const { retry = {}, errorMessages = {} as any, settleOnError = false } = options;
+        if (!settleOnError && response.status >= 400) {
             return { ok: true, response };
         }
 
@@ -467,30 +479,48 @@ export class X402LlmPayments {
      */
     async gateWithX402Payment(
         request: Request,
-        config: EnsurePaymentConfig,
+        config: EnsurePaymentConfig | EnsurePaymentConfigBuilder,
         handler: (ctx: {
             payment: PaymentPayload;
             requirement: PaymentRequirements;
         }) => Promise<Response>,
         options: {
-            // settlement option removed – we always settle before returning
             headerName?: string;
             retry?: RetryOptions;
             errorMessages?: NonNullable<PaymentMiddlewareConfig["errorMessages"]>;
             onSettle?: (result: PaymentSettlementResult) => void;
             onSettleError?: (error: unknown) => void;
+            settleOnError?: boolean;
         } = {},
     ): Promise<Response> {
-        const requirementOrFailure = this.createRequirements(request, config);
+        // Best-effort decode; dynamic config builders may use claimed payer
+        let rawPayment: PaymentPayload | undefined = undefined;
+        try {
+            const header = request.headers.get(options.headerName ?? this.headerName);
+            if (header) {
+                const decoded = exact.evm.decodePayment(header);
+                (decoded as any).x402Version = X402_VERSION;
+                rawPayment = decoded;
+            }
+        } catch (_) {
+            // ignore; header may be absent or invalid at this stage
+        }
+
+        const resolvedConfig: EnsurePaymentConfig =
+            typeof config === "function"
+                ? await (config as EnsurePaymentConfigBuilder)({ request, rawPayment })
+                : config;
+
+        const requirementOrFailure = this.createRequirements(request, resolvedConfig);
         if (!("scheme" in (requirementOrFailure as any))) {
             return (requirementOrFailure as PaymentFailureResult).response;
         }
         const requirement = requirementOrFailure as PaymentRequirements;
 
-		const errorMessages =
-			options.errorMessages ??
-			(config as any).config?.errorMessages ??
-			({} as any);
+        const errorMessages =
+            options.errorMessages ??
+            (resolvedConfig as any).config?.errorMessages ??
+            ({} as any);
 
 		const headerCheck = this.checkPaymentHeader(request, [requirement], {
 			headerName: options.headerName,
@@ -522,7 +552,7 @@ export class X402LlmPayments {
             headerCheck.payment,
             verification.requirement,
             upstreamResponse,
-            { retry: options.retry, errorMessages },
+            { retry: options.retry, errorMessages, settleOnError: options.settleOnError },
         );
         options.onSettle?.(settlement);
         return settlement.response;

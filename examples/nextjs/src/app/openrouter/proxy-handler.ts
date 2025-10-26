@@ -1,8 +1,8 @@
 import {
-	type EnsurePaymentConfig,
-	logPaymentResponseHeader,
-	type PaymentSettlementResult,
-	X402LlmPayments,
+    type EnsurePaymentConfig,
+    logPaymentResponseHeader,
+    type PaymentSettlementResult,
+    X402LlmPayments,
 } from "@nuwa-ai/x402/llm";
 import { privateKeyToAccount } from "viem/accounts";
 import { applyCorsHeaders } from "@/lib/cors";
@@ -42,6 +42,30 @@ function getDefaultPaymentConfig(): EnsurePaymentConfig {
 			mimeType: "application/json",
 		},
 	};
+}
+
+// In-memory IOU store keyed by payer address (USD). Replace with Redis/DB in prod.
+const pendingByAddress = new Map<string, number>();
+function getOwedUSD(addr: string) {
+    return pendingByAddress.get(addr) ?? 0;
+}
+function setOwedUSD(addr: string, usd: number) {
+    pendingByAddress.set(addr, usd);
+}
+
+// Extract the USD cost of a response. Stubbed – implement OpenRouter usage parsing later.
+async function extractCostUSD(resp: Response, req: Request): Promise<number> {
+    try {
+        const text = await resp.clone().text();
+        if (!text) return 0;
+        const json = JSON.parse(text);
+        // TODO: map OpenRouter usage/model pricing to USD
+        // const usage = json.usage; // prompt_tokens, completion_tokens
+        // return computeUSD(usage, json.model);
+        return 0;
+    } catch {
+        return 0;
+    }
 }
 
 function resolvePaymentConfig(
@@ -87,11 +111,10 @@ function resolveTargetPath(pathSegments: string[]) {
 }
 
 export async function forwardOpenRouter(
-	request: Request,
-	pathSegments: string[] = [],
-	paymentOverrides: Partial<EnsurePaymentConfig> = {},
+    request: Request,
+    pathSegments: string[] = [],
+    paymentOverrides: Partial<EnsurePaymentConfig> = {},
 ) {
-	const paymentConfig = resolvePaymentConfig({ ...paymentOverrides });
 
 	const finalizeResponse = (original: Response) =>
 		applyCorsHeaders(request, original);
@@ -117,28 +140,35 @@ export async function forwardOpenRouter(
 		JSON.stringify(request.body),
 	);
 
-	const onSettle = (settlementResult: PaymentSettlementResult) => {
-		const logPayload: Record<string, unknown> = {
-			ok: settlementResult.ok,
-			responseStatus: settlementResult.response.status,
-		};
-		if (settlementResult.ok && settlementResult.settlement) {
-			logPayload.transaction = settlementResult.settlement.transaction;
-			logPayload.network = settlementResult.settlement.network;
-			logPayload.payer = settlementResult.settlement.payer;
-		}
-		if (settlementResult.ok) {
-			settlementLogger.info("Settlement finished", logPayload);
-		} else {
-			settlementLogger.warn("Settlement failed", logPayload);
-		}
-	};
+    let nextCostUSD: number | null = null;
 
-	const makeUpstream = async () => {
-		let upstreamResponse: Response;
-		try {
-			upstreamResponse = await fetch(targetUrl, init);
-		} catch (error) {
+    const onSettle = (settlementResult: PaymentSettlementResult) => {
+        const logPayload: Record<string, unknown> = {
+            ok: settlementResult.ok,
+            responseStatus: settlementResult.response.status,
+        };
+        if (settlementResult.ok && settlementResult.settlement) {
+            logPayload.transaction = settlementResult.settlement.transaction;
+            logPayload.network = settlementResult.settlement.network;
+            logPayload.payer = settlementResult.settlement.payer;
+            // Store the next owed USD for this verified payer
+            const payer = settlementResult.settlement.payer as string | undefined;
+            if (payer && nextCostUSD != null) {
+                setOwedUSD(payer, nextCostUSD);
+            }
+        }
+        if (settlementResult.ok) {
+            settlementLogger.info("Settlement finished", logPayload);
+        } else {
+            settlementLogger.warn("Settlement failed", logPayload);
+        }
+    };
+
+    const makeUpstream = async () => {
+        let upstreamResponse: Response;
+        try {
+            upstreamResponse = await fetch(targetUrl, init);
+        } catch (error) {
 			proxyLogger.error(
 				`Upstream request failed for ${method} ${targetPath}`,
 				error,
@@ -162,27 +192,49 @@ export async function forwardOpenRouter(
 		responseHeaders.delete("content-encoding");
 		responseHeaders.delete("transfer-encoding");
 
-		const response = new Response(upstreamResponse.body, {
-			status: upstreamResponse.status,
-			statusText: upstreamResponse.statusText,
-			headers: responseHeaders,
-		});
+        const response = new Response(upstreamResponse.body, {
+            status: upstreamResponse.status,
+            statusText: upstreamResponse.statusText,
+            headers: responseHeaders,
+        });
 
-		proxyLogger.info(
-			`Response ${upstreamResponse.status} ${upstreamResponse.statusText} for ${method} ${targetPath}`,
-		);
+        proxyLogger.info(
+            `Response ${upstreamResponse.status} ${upstreamResponse.statusText} for ${method} ${targetPath}`,
+        );
 
-		return response;
-	};
+        // Compute the USD cost of THIS request; will be charged on next call
+        nextCostUSD = await extractCostUSD(response, request);
+        return response;
+    };
 
-	const paymentGated = await payments.gateWithX402Payment(
-		request,
-		paymentConfig,
-		() => makeUpstream(),
-		{
-			onSettle,
-		},
-	);
+    // Dynamic pricing per caller – use claimed address in rawPayment to form config
+    const dynamicConfig = async (ctx: { request: Request; rawPayment?: any }) => {
+        const env = getEnv();
+        const account = getServiceAccount();
+        const claimed = ctx.rawPayment?.payer ?? ctx.rawPayment?.from ?? ctx.rawPayment?.owner;
+        const owedUSD = claimed ? getOwedUSD(claimed) : 0;
+        return {
+            payTo: account.address,
+            price: owedUSD,
+            network: env.NETWORK,
+            config: {
+                description: "Access to OpenRouter proxy",
+                mimeType: "application/json",
+                ...(paymentOverrides.config || {}),
+            },
+            ...paymentOverrides,
+        } as EnsurePaymentConfig;
+    };
+
+    const paymentGated = await payments.gateWithX402Payment(
+        request,
+        dynamicConfig,
+        () => makeUpstream(),
+        {
+            onSettle,
+            // settleOnError: true, // enable if you want to settle prior debt even when upstream fails
+        },
+    );
 
 	// Log the X-PAYMENT-RESPONSE header (if present) for observability.
 	// This works in conjunction with the middleware always settling before return.
