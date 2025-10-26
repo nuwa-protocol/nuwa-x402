@@ -1,10 +1,10 @@
+import { privateKeyToAccount } from "viem/accounts";
 import { applyCorsHeaders } from "@/lib/cors";
 import { env } from "@/lib/env";
 import {
 	createPaymentPlugin,
 	type EnsurePaymentConfig,
 } from "./payment-plugin";
-import { privateKeyToAccount } from "viem/accounts";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai";
 const DEFAULT_TARGET_PATH = "/api/v1/chat/completions";
@@ -125,9 +125,15 @@ export async function forwardOpenRouter(
 		return finalizeResponse(response);
 	}
 
+	console.log(
+		`[openrouter-proxy] Upstream response ${upstreamResponse.status} ${upstreamResponse.statusText} for ${method} ${targetPath}\n ${JSON.stringify(upstreamResponse.body)}`,
+	);
+
 	const responseHeaders = new Headers(upstreamResponse.headers);
 	responseHeaders.delete("content-security-policy");
 	responseHeaders.delete("content-length");
+	responseHeaders.delete("content-encoding");
+	responseHeaders.delete("transfer-encoding");
 
 	const response = new Response(upstreamResponse.body, {
 		status: upstreamResponse.status,
