@@ -30,10 +30,34 @@ const paymentsLogger = createLogger(["llm", "payments"]);
 
 const X_PAYMENT_HEADER = "X-PAYMENT";
 const X_PAYMENT_RESPONSE_HEADER = "X-PAYMENT-RESPONSE";
-const JSON_CONTENT_TYPE = { "Content-Type": "application/json" } as const;
+const ACCESS_CONTROL_EXPOSE_HEADERS = "Access-Control-Expose-Headers";
+const JSON_RESPONSE_HEADERS = {
+	"Content-Type": "application/json",
+	[ACCESS_CONTROL_EXPOSE_HEADERS]: X_PAYMENT_RESPONSE_HEADER,
+} as const;
 const X402_VERSION = 1;
 const DEFAULT_SETTLEMENT_ATTEMPTS = 3;
 const DEFAULT_BACKOFF_START_MS = 150;
+
+function ensurePaymentResponseIsExposed(headers: Headers) {
+	if (!headers.has(X_PAYMENT_RESPONSE_HEADER)) return;
+	const existing = headers.get(ACCESS_CONTROL_EXPOSE_HEADERS);
+	if (!existing) {
+		headers.set(ACCESS_CONTROL_EXPOSE_HEADERS, X_PAYMENT_RESPONSE_HEADER);
+		return;
+	}
+
+	const lowerCased = existing
+		.split(",")
+		.map((value) => value.trim().toLowerCase())
+		.filter(Boolean);
+	if (!lowerCased.includes(X_PAYMENT_RESPONSE_HEADER.toLowerCase())) {
+		headers.set(
+			ACCESS_CONTROL_EXPOSE_HEADERS,
+			`${existing}, ${X_PAYMENT_RESPONSE_HEADER}`,
+		);
+	}
+}
 
 export interface PaymentPluginOptions {
 	facilitator?: FacilitatorConfig;
@@ -87,7 +111,7 @@ function buildPaymentRequiredResponse(
 			accepts,
 			...additional,
 		}),
-		{ status: 402, headers: JSON_CONTENT_TYPE },
+		{ status: 402, headers: JSON_RESPONSE_HEADERS },
 	);
 }
 
@@ -119,7 +143,7 @@ function createPaymentRequirements(
 					x402Version: X402_VERSION,
 					error: atomicAmountForAsset.error,
 				}),
-				{ status: 500, headers: JSON_CONTENT_TYPE },
+				{ status: 500, headers: JSON_RESPONSE_HEADERS },
 			),
 		};
 	}
@@ -136,7 +160,7 @@ function createPaymentRequirements(
 					x402Version: X402_VERSION,
 					error: `Unsupported network: ${network}`,
 				}),
-				{ status: 500, headers: JSON_CONTENT_TYPE },
+				{ status: 500, headers: JSON_RESPONSE_HEADERS },
 			),
 		};
 	}
@@ -311,16 +335,16 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 				if (facilitatorStatus && facilitatorStatus >= 500) {
 					return {
 						ok: false,
-						response: new Response(
-							JSON.stringify({
-								x402Version: X402_VERSION,
-								error:
-									requirementConfig?.errorMessages?.settlementFailed ||
-									"Settlement service is temporarily unavailable. Please retry.",
-								accepts: toJsonSafe(paymentRequirements),
-							}),
-							{ status: 502, headers: JSON_CONTENT_TYPE },
-						),
+					response: new Response(
+						JSON.stringify({
+							x402Version: X402_VERSION,
+							error:
+								requirementConfig?.errorMessages?.settlementFailed ||
+								"Settlement service is temporarily unavailable. Please retry.",
+							accepts: toJsonSafe(paymentRequirements),
+						}),
+						{ status: 502, headers: JSON_RESPONSE_HEADERS },
+					),
 					};
 				}
 				return {
@@ -419,6 +443,8 @@ export class X402LlmPayments {
 				safeBase64Encode(JSON.stringify(payload)),
 			);
 		}
+
+		ensurePaymentResponseIsExposed(upstreamResponse.headers);
 
 		// Allow caller to react to settlement info (e.g. update deferred pricing state)
 		try {

@@ -156,8 +156,24 @@ export async function forwardOpenRouter(
 		},
 	);
 
-	// Ensure CORS is set and log the payment response header for observability
+	// Ensure CORS is set and expose the payment response header to browsers
 	const withCors = applyCorsHeaders(request, result);
+	const exposeHeaders = withCors.headers.get("Access-Control-Expose-Headers");
+	const paymentHeaderName = "X-PAYMENT-RESPONSE";
+	if (!exposeHeaders) {
+		withCors.headers.set("Access-Control-Expose-Headers", paymentHeaderName);
+	} else {
+		const tokens = exposeHeaders
+			.split(",")
+			.map((value) => value.trim().toLowerCase())
+			.filter(Boolean);
+		if (!tokens.includes(paymentHeaderName.toLowerCase())) {
+			withCors.headers.set(
+				"Access-Control-Expose-Headers",
+				`${exposeHeaders}, ${paymentHeaderName}`,
+			);
+		}
+	}
 	try {
 		logPaymentResponseHeader(withCors.headers, settlementLogger as any);
 	} catch {}
