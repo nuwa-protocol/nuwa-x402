@@ -1,33 +1,11 @@
 {
-  "name": "x402-mcp-example",
-  "version": "0.1.0",
+  "name": "nuwa-x402-monorepo",
   "private": true,
+  "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "dev": "next dev --turbopack",
-    "build": "next build --turbopack",
-    "start": "next start",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@coinbase/x402": "^0.5.1",
-    "@modelcontextprotocol/sdk": "^1.20.2",
-    "mcp-handler": "^1.0.3",
-    "next": "15.5.2",
-    "viem": "^2.37.3",
-    "x402": "^0.6.6",
-    "x402-next": "^0.6.5",
-    "zod": "^3.25.76"
-  },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/minimatch": "^6.0.0",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "minimatch": "^10.0.3",
-    "tailwindcss": "^4",
-    "tw-animate-css": "^1.3.7",
-    "typescript": "^5"
-  },
-  "packageManager": "pnpm@9.15.4+sha512.b2dc20e2fc72b3e18848459b37359a32064663e5627a51e4c74b2c29dd8e8e0491483c3abb40789cfd578bf362fb6ba8261b05f0387d76792ed6e23ea3b1b6a0"
+    "dev": "pnpm -C examples/nextjs dev",
+    "build": "pnpm -C examples/nextjs build",
+    "start": "pnpm -C examples/nextjs start",
+    "typecheck": "pnpm -C examples/nextjs typecheck"
+  }
 }

@@ -15,9 +15,9 @@ import type {
 } from "x402/types";
 import { useFacilitator } from "x402/verify";
 import z, { type ZodRawShape } from "zod";
-import { createLogger } from "@/lib/logger";
+import { createLogger } from "../utils/logger";
 
-const mcpLogger = createLogger(["mcp", "x402"]);
+const mcpLogger = createLogger(["mcp"]);
 
 export interface FacilitatorConfig {
 	url: `${string}://${string}`;
@@ -84,7 +84,7 @@ function createPaidToolMethod(
 			};
 			toolLogger.info("Tool request received");
 
-			const payment = extra._meta?.["x402/payment"];
+			const payment = (extra as any)?._meta?.["x402/payment"];
 
 			const atomicAmountForAsset = processPriceToAtomicAmount(
 				options.price,
@@ -113,7 +113,7 @@ function createPaidToolMethod(
 					x402Version,
 					error: "_meta.x402/payment is required",
 					accepts: [paymentRequirements],
-				}) as any; // I genuinely dont why this is needed
+				}) as any;
 			}
 
 			let decodedPayment: PaymentPayload;
@@ -127,7 +127,7 @@ function createPaidToolMethod(
 					x402Version,
 					error: "Invalid payment",
 					accepts: [paymentRequirements],
-				}) as any; // I genuinely dont why this is needed
+				}) as any;
 			}
 
 			toolLogger.debug("Decoded payment payload", decodedPayment);
@@ -148,7 +148,7 @@ function createPaidToolMethod(
 					}) as any;
 				}
 			} catch (error) {
-				toolLogger.error("Payment verification threw", error);
+				toolLogger.error("Payment verification threw error \n", error);
 				return makeErrorResponse({
 					x402Version,
 					error: `Verification failed: ${error}`,
@@ -166,8 +166,8 @@ function createPaidToolMethod(
 				if (
 					result &&
 					typeof result === "object" &&
-					"isError" in result &&
-					result.isError
+					"isError" in (result as any) &&
+					(result as any).isError
 				) {
 					executionError = true;
 				}
@@ -177,7 +177,7 @@ function createPaidToolMethod(
 				result = {
 					isError: true,
 					content: [{ type: "text", text: `Tool execution failed: ${error}` }],
-				};
+				} as any;
 			}
 
 			toolLogger.info("Tool execution completed. Settling payment...");
@@ -187,16 +187,15 @@ function createPaidToolMethod(
 				try {
 					const settlement = await settle(decodedPayment, paymentRequirements);
 					// Add settlement info to result if successful
-					if (settlement.success && result) {
+					if ((settlement as any).success && result) {
 						// Safely add settlement info to result metadata
-						if (!result._meta) {
-							result._meta = {};
-						}
-						result._meta["x402/payment-response"] = {
+						const r: any = result;
+						if (!r._meta) r._meta = {};
+						r._meta["x402/payment-response"] = {
 							success: true,
-							transaction: settlement.transaction,
-							network: settlement.network,
-							payer: settlement.payer,
+							transaction: (settlement as any).transaction,
+							network: (settlement as any).network,
+							payer: (settlement as any).payer,
 						};
 					}
 				} catch (settlementError) {
@@ -212,7 +211,7 @@ function createPaidToolMethod(
 
 			toolLogger.info("Payment settled. Returning result to client.");
 
-			return result;
+			return result as any;
 		};
 		return server.tool(
 			name,
@@ -222,7 +221,7 @@ function createPaidToolMethod(
 				...annotations,
 				paymentHint: true,
 			},
-			cbWithPayment as any, // I genuinely dont why this is needed
+			cbWithPayment as any,
 		);
 	};
 	return paidTool;
@@ -256,3 +255,5 @@ export function createPaidMcpHandler(
 
 	return paidHandler;
 }
+
+export type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

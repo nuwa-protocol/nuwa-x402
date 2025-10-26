@@ -2,9 +2,9 @@ import { facilitator } from "@coinbase/x402";
 import { privateKeyToAccount } from "viem/accounts";
 import z from "zod";
 import {
-	createPaidMcpHandler,
-	type FacilitatorConfig,
-} from "./x402-mcp-server";
+  createPaidMcpHandler,
+  type FacilitatorConfig,
+} from "@nuwa-ai/x402/mcp";
 import { env } from "@/lib/env";
 import {
 	applyCorsHeaders,

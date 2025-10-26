@@ -1,0 +1,34 @@
+{
+  "name": "examples-nextjs",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build --turbopack",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coinbase/x402": "^0.5.1",
+    "@modelcontextprotocol/sdk": "^1.20.2",
+    "mcp-handler": "^1.0.3",
+    "next": "15.5.2",
+    "viem": "^2.37.3",
+    "x402": "^0.6.6",
+    "x402-next": "^0.6.5",
+    "zod": "^3.25.76",
+    "@nuwa-ai/x402": "workspace:*"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/minimatch": "^6.0.0",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "minimatch": "^10.0.3",
+    "tailwindcss": "^4",
+    "tw-animate-css": "^1.3.7",
+    "typescript": "^5"
+  }
+}
+
