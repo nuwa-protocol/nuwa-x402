@@ -46,3 +46,4 @@ next-env.d.ts
 .xmcp
 xmcp-env.d.ts
 examples/nextjs/.next
+examples/nextjs/node_modules
