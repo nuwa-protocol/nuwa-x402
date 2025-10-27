@@ -1,11 +1,15 @@
 # @nuwa-ai/x402
 
 Small helpers to add x402 payments to:
-- MCP servers: mark tools as paid and verify/settle before running
-- HTTP/LLM proxies: gate endpoints with x402 and settle automatically
+- MCP servers: mark tools as paid and verify/settle before running (tracks the original x402 MCP specification)
+- HTTP/LLM proxies: gate endpoints with x402 and settle automatically (currently via a naive flat-price flow while v2 `upto` schema support is in progress)
+
+Status
+- `mcp` – aligned with the original x402 MCP spec used by x402-compatible clients today.
+- `llm` – implements flat-price payments only; full v2 `upto` schema-based payments are under active development.
 
 Exports
-- `mcp` – `createPaidMcpHandler(serverInit, serverOptions, { recipient, network, facilitator })` for Nextjs, referred to vercel's [x402-mcp](https://github.com/ethanniser/x402-mcp) and tailored to Nuwa AI compatible.
+- `mcp` – `createPaidMcpHandler(serverInit, serverOptions, { recipient, network, facilitator })` for Nextjs, referred to vercel's [x402-mcp](https://github.com/ethanniser/x402-mcp).
 - `llm` – `X402LlmPayments` and helpers (`createPaymentPlugin`, `logPaymentResponseHeader`, `decodePaymentResponseHeader`)
 - Common types re-exported from `x402/types`
 
@@ -77,6 +81,7 @@ export async function POST(request: NextRequest) {
 Behavior
 - Without an `X-PAYMENT` header the handler returns `402` and a JSON body describing `accepts` (requirements).
 - With a valid payment: verifies first, runs your handler, then settles before returning. On success, adds `X-PAYMENT-RESPONSE` header with settlement details.
+- Pricing today is fixed per endpoint invocation; v2 `upto` schema-driven pricing is forthcoming.
 
 Facilitator
 - The library uses `x402/verify` under the hood. You can pass a `FacilitatorConfig` to both MCP and LLM helpers.
@@ -92,4 +97,4 @@ Utilities
 - `decodePaymentResponseHeader(responseOrHeaders)` – parse the header programmatically.
 
 See Also
-- End-to-end usage in examples/nextjs (OpenRouter proxy and paid MCP server).
+- End-to-end usage in examples/nextjs (OpenRouter proxy and paid MCP server). You can exercise a hosted build at https://xnuwa.app.

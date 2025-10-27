@@ -1,9 +1,10 @@
-# Nuwa x402 Monorepo
+# Nuwa x402 
 
-Helpers and examples for adding x402 payments to AI agents, MCP servers, and HTTP/LLM proxies.
+This repo contains the implementation of the x402-based service implementations. We plan keep tracking on the progress of x402 protocol and provide up-to-date examples and packages.
+
 
 What is inside
-- `packages/x402` – TypeScript helpers published as `@nuwa-ai/x402` for: 1) paid MCP tools (`createPaidMcpHandler`) and 2) HTTP payment gating for LLM/API proxies (`X402LlmPayments`). See packages/x402/README.md.
+- `packages/x402` – TypeScript packages published as `@nuwa-ai/x402` for: 1) paid MCP tools (`createPaidMcpHandler`) fully aligned with the original x402 MCP spec , forked from vercel's implementation. and 2) HTTP payment gating for LLM/API proxies (`X402LlmPayments`). The LLM helper presently supports a naive flat-price charge while v2 `upto` schema-based payments are in development. See packages/x402/README.md for details and roadmap notes.
 - `examples/nextjs` – Minimal Next.js app that exposes: 1) a remote MCP server with paid tools and 2) an OpenRouter proxy gated by x402 payments. See examples/nextjs/README.md.
 
 Prerequisites
@@ -22,12 +23,12 @@ Environment
   - `OPENROUTER_API_KEY` – for the OpenRouter proxy.
   - `NETWORK` – `base-sepolia` (default) or `base`.
   - `ALLOWED_ORIGIN` – optional CORS origin for API access from browsers.
-- If you use the Coinbase facilitator, you also need:
+- For Coinbase facilitator, you also need:
   - `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` (see https://docs.cdp.coinbase.com/).
 
 Run The Example
-- Start: `pnpm dev` then visit http://localhost:3000 (API-only example).
-- OpenRouter proxy: `GET/POST /openrouter` and `/openrouter/[...path]` – responds `402` with payment requirements until a valid `X-PAYMENT` header is provided.
+- Start: `pnpm dev` then visit http://localhost:3000 (API-only example). A hosted build is also available at xNUWA https://xnuwa.app for quickly exercising the MCP and LLM endpoints.
+- OpenRouter proxy: `GET/POST /openrouter` and `/openrouter/[...path]` – responds `402` with payment requirements until a valid `X-PAYMENT` header is provided. Currently uses the flat-price flow exposed by `X402LlmPayments`.
 - MCP server: `GET/POST /mcp` – exposes paid tools; returns an error with `accepts` data until the MCP client supplies `_meta["x402/payment"]`.
 
 Production Notes

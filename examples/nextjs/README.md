@@ -1,8 +1,8 @@
 # Next.js Example (x402)
 
 Minimal Next.js app demonstrating two flows:
-- Remote MCP server with paid tools at `/mcp`
-- OpenRouter proxy gated by x402 at `/openrouter` and `/openrouter/[...path]`
+- Remote MCP server with paid tools at `/mcp` (powered by the MCP helper aligned with the original x402 spec)
+- OpenRouter proxy gated by x402 at `/openrouter` and `/openrouter/[...path]` (uses the LLM helper’s current flat-price payment flow while v2 `upto` schema support is built out)
 
 Setup
 - Node 18+ (20 recommended) and pnpm 9+
@@ -24,7 +24,7 @@ CDP_WALLET_SECRET=...
 
 Run
 - From repo root: `pnpm dev`
-- Next.js dev server listens on http://localhost:3000
+- Next.js dev server listens on http://localhost:3000. A hosted preview is available at https://xnuwa.app if you want to try the MCP and LLM endpoints without running locally.
 
 Endpoints
 - `GET/POST /mcp` – MCP server
@@ -32,7 +32,7 @@ Endpoints
   - Supply `_meta["x402/payment"]` in the MCP client request. If missing/invalid, you receive an error with `accepts` requirements.
 - `GET/POST /openrouter` and `/openrouter/[...path]` – OpenRouter proxy
   - Without `X-PAYMENT` header returns `402` and a JSON body describing `accepts`.
-  - With a valid payment the request is forwarded; settlement happens before response returns.
+  - With a valid payment the request is forwarded; settlement happens before response returns using the flat-price helper today.
   - The response includes `X-PAYMENT-RESPONSE` header on successful settlement.
 
 Production
