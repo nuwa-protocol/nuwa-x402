@@ -382,8 +382,11 @@ export type EnsurePaymentConfigOrBuilder =
 	  }) => EnsurePaymentConfig | Promise<EnsurePaymentConfig>);
 
 export class X402LlmPayments {
-	private plugin = createPaymentPlugin(this.options);
-	constructor(private readonly options: PaymentPluginOptions = {}) {}
+	private readonly plugin: ReturnType<typeof createPaymentPlugin>;
+
+	constructor(private readonly options: PaymentPluginOptions = {}) {
+		this.plugin = createPaymentPlugin(options);
+	}
 
 	// Non-fatal decode of X-PAYMENT so callers can do dynamic pricing keyed by claimed address.
 	private tryDecodePaymentHeader(headers: Headers): PaymentPayload | undefined {
