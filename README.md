@@ -1,4 +1,4 @@
-# Nuwa x402 
+# Nuwa x402 SDK and Example
 
 This repo contains the implementation of the x402-based service implementations. We plan keep tracking on the progress of x402 protocol and provide up-to-date examples and packages.
 
