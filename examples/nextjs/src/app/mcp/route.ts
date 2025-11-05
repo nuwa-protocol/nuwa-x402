@@ -5,11 +5,28 @@ import {
 	createPaidMcpHandler,
 	type FacilitatorConfig,
 } from "@nuwa-ai/x402/mcp";
-import { getEnv } from "@/lib/env";
+import { getEnv, type Env } from "@/lib/env";
 import {
 	applyCorsHeaders,
 	createCorsPreflightResponse,
 } from "@/lib/cors";
+
+// Optional override: use a custom facilitator when provided in .env.
+function resolveFacilitator(env: Env): FacilitatorConfig {
+	const url = env.X402_FACILITATOR_URL;
+	if (!url) return facilitator as unknown as FacilitatorConfig;
+	return {
+		url,
+		async createAuthHeaders() {
+			// Public facilitator – no auth headers required
+			return {
+				verify: {},
+				settle: {},
+				supported: {},
+			};
+		},
+	} satisfies FacilitatorConfig;
+}
 
 let cachedHandler:
 	| ReturnType<typeof createPaidMcpHandler>
@@ -76,7 +93,7 @@ function getHandler() {
 			},
 			{
 				recipient: sellerAccount.address,
-				facilitator: facilitator as unknown as FacilitatorConfig,
+				facilitator: resolveFacilitator(env),
 				network: env.NETWORK,
 			},
 		);

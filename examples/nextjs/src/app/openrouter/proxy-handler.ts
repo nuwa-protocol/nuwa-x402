@@ -1,12 +1,13 @@
+import { applyCorsHeaders } from "@/lib/cors";
+import { type Env, getEnv } from "@/lib/env";
+import { createLogger } from "@/lib/logger";
 import {
 	type EnsurePaymentConfig,
 	logPaymentResponseHeader,
 	X402LlmPayments,
 } from "@nuwa-ai/x402/llm";
+import type { FacilitatorConfig } from "@nuwa-ai/x402/mcp";
 import { privateKeyToAccount } from "viem/accounts";
-import { applyCorsHeaders } from "@/lib/cors";
-import { getEnv } from "@/lib/env";
-import { createLogger } from "@/lib/logger";
 
 const proxyLogger = createLogger(["openrouter", "proxy"]);
 const settlementLogger = proxyLogger.child("settlement");
@@ -15,15 +16,33 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai";
 const DEFAULT_TARGET_PATH = "/api/v1/chat/completions";
 const DEFAULT_PRICE = "$0.01";
 
+const env = getEnv();
+
+// Optional: allow a custom facilitator defined in .env for X Layer support
+function resolveFacilitator(env: Env): FacilitatorConfig | undefined {
+	const url = env.X402_FACILITATOR_URL;
+	if (!url) return undefined;
+	return {
+		url,
+		async createAuthHeaders() {
+			return {
+				verify: {},
+				settle: {},
+				supported: {},
+			};
+		},
+	} satisfies FacilitatorConfig;
+}
+
 const serviceAccount = privateKeyToAccount(
-	getEnv().SERVICE_PRIVATE_KEY as `0x${string}`,
+	env.SERVICE_PRIVATE_KEY as `0x${string}`,
 );
-const payments = new X402LlmPayments();
+const payments = new X402LlmPayments({ facilitator: resolveFacilitator(env) });
 
 const defaultPaymentConfig: EnsurePaymentConfig = {
 	payTo: serviceAccount.address,
 	price: DEFAULT_PRICE,
-	network: getEnv().NETWORK,
+	network: env.NETWORK,
 	config: {
 		description: "Access to OpenRouter proxy",
 		mimeType: "application/json",
@@ -56,7 +75,7 @@ function buildForwardHeaders(request: Request) {
 		headers.set("x-title", "x402-openrouter-proxy");
 	}
 
-	headers.set("Authorization", `Bearer ${getEnv().OPENROUTER_API_KEY}`);
+	headers.set("Authorization", `Bearer ${env.OPENROUTER_API_KEY}`);
 
 	return headers;
 }

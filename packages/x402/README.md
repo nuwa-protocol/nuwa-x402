@@ -24,7 +24,10 @@ import { createPaidMcpHandler, type FacilitatorConfig } from "@nuwa-ai/x402/mcp"
 import { facilitator } from "@coinbase/x402"; // FacilitatorConfig implementation
 
 const seller = privateKeyToAccount(process.env.SERVICE_PRIVATE_KEY as `0x${string}`);
-const network = (process.env.NETWORK as "base" | "base-sepolia") ?? "base-sepolia";
+// Networks migrated from Base→X Layer; keep Base values temporarily for compatibility
+const network =
+  (process.env.NETWORK as "x-layer" | "x-layer-testnet" | "base" | "base-sepolia") ??
+  "x-layer-testnet";
 
 export const handler = createPaidMcpHandler(
   (server) => {
@@ -68,7 +71,7 @@ export async function POST(request: NextRequest) {
   const config: EnsurePaymentConfig = {
     payTo: seller.address,
     price: 0.01,          // USD
-    network: "base-sepolia",
+    network: "x-layer-testnet",
     config: { description: "My paid API", mimeType: "application/json" },
   };
 
@@ -88,8 +91,8 @@ Facilitator
 - With Coinbase’s facilitator, provide `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`, and `CDP_WALLET_SECRET`, or import `facilitator` from `@coinbase/x402` and pass it through.
 
 Configuration Notes
-- `price` is in USD. The helpers compute the on-chain amount automatically for the selected `network` and USDC asset.
-- Supported networks: `base-sepolia` (default) and `base`.
+- `price` is in USD. The helpers compute the on-chain amount automatically for the selected `network` and asset.
+- Networks: `x-layer-testnet` (default) and `x-layer` going forward. Base networks remain accepted for backward compatibility in this package, but end-to-end settlement requires facilitator and asset support on the target chain.
 - For HTTP endpoints you can customize error messages, input/output schemas, and timeouts via `config` (`PaymentMiddlewareConfig`).
 
 Utilities

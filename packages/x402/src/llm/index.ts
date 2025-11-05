@@ -24,6 +24,7 @@ import type {
 } from "x402/types";
 import { SupportedEVMNetworks } from "x402/types";
 import { useFacilitator } from "x402/verify";
+import { normalizeFacilitatorUrl } from "../utils/facilitator";
 import { createLogger } from "../utils/logger";
 
 const paymentsLogger = createLogger(["llm", "payments"]);
@@ -134,8 +135,20 @@ function createPaymentRequirements(
 	} = requirementConfig ?? {};
 	const method = config.method ?? request.method.toUpperCase();
 
+	paymentsLogger.info("Creating payment requirements", {
+		url: request.url,
+		method,
+		network,
+		price,
+	});
+
 	const atomicAmountForAsset = processPriceToAtomicAmount(price, network);
 	if ("error" in atomicAmountForAsset) {
+		paymentsLogger.error("Failed to process price into atomic amount", {
+			error: atomicAmountForAsset.error,
+			price,
+			network,
+		});
 		return {
 			ok: false,
 			response: new Response(
@@ -153,6 +166,9 @@ function createPaymentRequirements(
 		resource || requirementConfig?.resource || (`${request.url}` as Resource);
 
 	if (!SupportedEVMNetworks.includes(network)) {
+		paymentsLogger.error("Unsupported network for payment requirement", {
+			network,
+		});
 		return {
 			ok: false,
 			response: new Response(
@@ -186,6 +202,12 @@ function createPaymentRequirements(
 		},
 		extra: (asset as ERC20TokenAmount["asset"]).eip712,
 	};
+
+	paymentsLogger.info("Payment requirement constructed", {
+		network,
+		resource: resourceUrl,
+		payTo: requirement.payTo,
+	});
 
 	return requirement;
 }
@@ -239,7 +261,8 @@ function extractFacilitatorStatus(error: unknown) {
 
 export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 	const { facilitator } = options;
-	const { verify, settle } = useFacilitator(facilitator);
+	const normalizedFacilitator = normalizeFacilitatorUrl(facilitator);
+	const { verify, settle } = useFacilitator(normalizedFacilitator);
 
 	const ensurePayment = async (
 		request: Request,
@@ -247,16 +270,30 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 	): Promise<EnsurePaymentResult> => {
 		const requirementOrFailure = createPaymentRequirements(request, config);
 		if (!("scheme" in requirementOrFailure)) {
+			paymentsLogger.error("Failed to build payment requirements", {
+				url: request.url,
+				method: request.method,
+			});
 			return requirementOrFailure;
 		}
 
 		const paymentRequirements = [requirementOrFailure];
+		paymentsLogger.info("Payment requirements ready", {
+			url: request.url,
+			method: request.method,
+			requirements: paymentRequirements,
+		});
 		const { config: requirementConfig } = config;
 		const errorMessages: NonNullable<PaymentMiddlewareConfig["errorMessages"]> =
 			requirementConfig?.errorMessages ?? {};
 
 		const paymentHeader = request.headers.get(X_PAYMENT_HEADER);
 		if (!paymentHeader) {
+			paymentsLogger.error("Payment header missing", {
+				header: X_PAYMENT_HEADER,
+				url: request.url,
+				method: request.method,
+			});
 			return {
 				ok: false,
 				response: buildPaymentRequiredResponse(
@@ -267,11 +304,25 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 			};
 		}
 
+		paymentsLogger.info("Payment header received", {
+			header: X_PAYMENT_HEADER,
+			url: request.url,
+			method: request.method,
+		});
+
 		let decodedPayment: PaymentPayload;
 		try {
 			decodedPayment = exact.evm.decodePayment(paymentHeader);
 			decodedPayment.x402Version = X402_VERSION;
+			paymentsLogger.info("Payment decoded successfully", {
+				payment: decodedPayment,
+			});
 		} catch (error) {
+			paymentsLogger.error("Failed to decode payment header", {
+				error,
+				url: request.url,
+				method: request.method,
+			});
 			return {
 				ok: false,
 				response: buildPaymentRequiredResponse(
@@ -287,6 +338,10 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 			decodedPayment,
 		);
 		if (!selectedRequirement) {
+			paymentsLogger.error("No matching payment requirements", {
+				payment: decodedPayment,
+				requirements: paymentRequirements,
+			});
 			return {
 				ok: false,
 				response: buildPaymentRequiredResponse(
@@ -297,8 +352,37 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 			};
 		}
 
-		const verification = await verify(decodedPayment, selectedRequirement);
+		paymentsLogger.info("Selected payment requirement", {
+			payment: decodedPayment,
+			requirement: selectedRequirement,
+		});
+
+		let verification: Awaited<ReturnType<typeof verify>>;
+		try {
+			verification = await verify(decodedPayment, selectedRequirement);
+		} catch (error) {
+			paymentsLogger.error("Failed to verify payment", {
+				error,
+			});
+			const verificationError =
+				error instanceof Error ? error.message : String(error);
+			return {
+				ok: false,
+				response: buildPaymentRequiredResponse(
+					errorMessages?.verificationFailed || verificationError,
+					paymentRequirements,
+					{ verificationError },
+				),
+			};
+		}
+
 		if (!verification.isValid) {
+			paymentsLogger.error("Payment verification failed", {
+				payment: decodedPayment,
+				requirement: selectedRequirement,
+				reason: verification.invalidReason,
+				payer: verification.payer,
+			});
 			return {
 				ok: false,
 				response: buildPaymentRequiredResponse(
@@ -311,11 +395,22 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 			};
 		}
 
+		paymentsLogger.info("Payment verified successfully", {
+			payer: verification.payer,
+			payment: decodedPayment,
+		});
+
 		const settlePayment = async (
 			response: Response,
 		): Promise<PaymentSettlementResult> => {
 			// Upstream returned an error – skip settlement by default; caller can override via settleOnError
 			if (response.status >= 400) {
+				paymentsLogger.info(
+					"Skipping settlement due to upstream error status",
+					{
+						status: response.status,
+					},
+				);
 				return { ok: true, response };
 			}
 
@@ -323,6 +418,11 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 				const settlement = await retryWithBackoff(() =>
 					settle(decodedPayment, selectedRequirement),
 				);
+				paymentsLogger.info("Settlement attempt completed", {
+					success: settlement.success,
+					transaction: settlement.transaction,
+					network: settlement.network,
+				});
 				if (!settlement.success) {
 					paymentsLogger.warn(
 						"Settlement response did not indicate success",
@@ -333,20 +433,27 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 			} catch (error) {
 				const facilitatorStatus = extractFacilitatorStatus(error);
 				if (facilitatorStatus && facilitatorStatus >= 500) {
+					paymentsLogger.error("Settlement failed due to facilitator error", {
+						error,
+						status: facilitatorStatus,
+					});
 					return {
 						ok: false,
-					response: new Response(
-						JSON.stringify({
-							x402Version: X402_VERSION,
-							error:
-								requirementConfig?.errorMessages?.settlementFailed ||
-								"Settlement service is temporarily unavailable. Please retry.",
-							accepts: toJsonSafe(paymentRequirements),
-						}),
-						{ status: 502, headers: JSON_RESPONSE_HEADERS },
-					),
+						response: new Response(
+							JSON.stringify({
+								x402Version: X402_VERSION,
+								error:
+									requirementConfig?.errorMessages?.settlementFailed ||
+									"Settlement service is temporarily unavailable. Please retry.",
+								accepts: toJsonSafe(paymentRequirements),
+							}),
+							{ status: 502, headers: JSON_RESPONSE_HEADERS },
+						),
 					};
 				}
+				paymentsLogger.error("Settlement failed", {
+					error,
+				});
 				return {
 					ok: false,
 					response: buildPaymentRequiredResponse(
@@ -357,6 +464,11 @@ export function createPaymentPlugin(options: PaymentPluginOptions = {}) {
 				};
 			}
 		};
+
+		paymentsLogger.info("Payment requirement satisfied", {
+			payment: decodedPayment,
+			requirement: selectedRequirement,
+		});
 
 		return {
 			ok: true,
@@ -407,6 +519,10 @@ export class X402LlmPayments {
 		handler: () => Promise<Response>,
 		options: GateOptions = {},
 	): Promise<Response> {
+		paymentsLogger.info("Gating request with X402 payment", {
+			url: request.url,
+			method: request.method,
+		});
 		const rawPayment = this.tryDecodePaymentHeader(request.headers);
 		const concreteConfig =
 			typeof config === "function"
@@ -415,10 +531,24 @@ export class X402LlmPayments {
 
 		const ensured = await this.plugin.ensurePayment(request, concreteConfig);
 		if (!ensured.ok) {
+			paymentsLogger.error("Payment gate rejected request", {
+				url: request.url,
+				method: request.method,
+			});
 			return ensured.response;
 		}
 
+		paymentsLogger.info("Payment gate accepted request", {
+			url: request.url,
+			method: request.method,
+		});
+
 		const upstreamResponse = await handler();
+		paymentsLogger.info("Upstream handler completed", {
+			status: upstreamResponse.status,
+			url: request.url,
+			method: request.method,
+		});
 
 		// Optionally bypass the default "skip settlement on error" behavior
 		if (options.settleOnError && upstreamResponse.status >= 400) {
@@ -427,14 +557,24 @@ export class X402LlmPayments {
 		}
 
 		const settlementResult = await ensured.settle(upstreamResponse.clone());
+		paymentsLogger.info("Settlement result received", {
+			ok: settlementResult.ok,
+			settlement: settlementResult.ok ? settlementResult.settlement : undefined,
+			url: request.url,
+			method: request.method,
+		});
 
 		// If settlement failed in a way that returned a response (402/502), return that immediately
 		if (!settlementResult.ok) {
+			paymentsLogger.error("Settlement returned an error response", {
+				url: request.url,
+				method: request.method,
+			});
 			return settlementResult.response;
 		}
 
 		// On success (or skipped due to error status), attach X-PAYMENT-RESPONSE header when available
-		if (settlementResult.settlement && settlementResult.settlement.success) {
+		if (settlementResult.settlement?.success) {
 			const payload = {
 				success: true,
 				transaction: settlementResult.settlement.transaction,
@@ -455,6 +595,12 @@ export class X402LlmPayments {
 		} catch (e) {
 			paymentsLogger.warn("onSettle handler threw", e);
 		}
+
+		paymentsLogger.info("Returning upstream response", {
+			status: upstreamResponse.status,
+			url: request.url,
+			method: request.method,
+		});
 
 		return upstreamResponse;
 	}

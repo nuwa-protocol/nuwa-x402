@@ -15,6 +15,7 @@ import type {
 } from "x402/types";
 import { useFacilitator } from "x402/verify";
 import z, { type ZodRawShape } from "zod";
+import { normalizeFacilitatorUrl } from "../utils/facilitator";
 import { createLogger } from "../utils/logger";
 
 const mcpLogger = createLogger(["mcp"]);
@@ -40,7 +41,8 @@ export interface ServerPaymentOptions {
 export interface ServerPaymentConfig {
 	recipient: Address;
 	facilitator: FacilitatorConfig;
-	network: "base-sepolia" | "base";
+	// Migrated from Base→X Layer; keep Base values for backward compat
+	network: "x-layer-testnet" | "x-layer" | "base-sepolia" | "base";
 }
 
 export interface ConfigWithPayment extends Config, ServerPaymentConfig {}
@@ -75,7 +77,8 @@ function createPaidToolMethod(
 	) => {
 		const toolLogger = mcpLogger.child(name);
 		const cbWithPayment: ToolCallback<any> = async (args, extra) => {
-			const { verify, settle } = useFacilitator(config.facilitator);
+			const normalizedFacilitator = normalizeFacilitatorUrl(config.facilitator);
+			const { verify, settle } = useFacilitator(normalizedFacilitator);
 			const makeErrorResponse = (obj: Record<string, unknown>) => {
 				return {
 					isError: true,

@@ -10,8 +10,8 @@ Setup
 ```
 # Recipient account (used to derive payTo). DO NOT use a hot mainnet key in dev.
 SERVICE_PRIVATE_KEY=0x...
-# Network: base-sepolia (default) or base
-NETWORK=base-sepolia
+# Network: x-layer-testnet (default) or x-layer
+NETWORK=x-layer-testnet
 # For the OpenRouter proxy
 OPENROUTER_API_KEY=sk-or-...
 # Optional CORS origin to allow browser apps
@@ -20,6 +20,9 @@ ALLOWED_ORIGIN=http://localhost:3000
 CDP_API_KEY_ID=...
 CDP_API_KEY_SECRET=...
 CDP_WALLET_SECRET=...
+
+# Optional: use a custom facilitator (e.g., for X Layer support)
+X402_FACILITATOR_URL=https://your-facilitator.example.com
 ```
 
 Run
@@ -36,5 +39,5 @@ Endpoints
   - The response includes `X-PAYMENT-RESPONSE` header on successful settlement.
 
 Production
-- Switch to mainnet by setting `NETWORK=base` and funding the recipient address with USDC.
+- Switch to mainnet by setting `NETWORK=x-layer` and funding the recipient address with the supported stablecoin on X Layer.
 - Ensure your facilitator credentials are set if you use Coinbase’s facilitator in production.
