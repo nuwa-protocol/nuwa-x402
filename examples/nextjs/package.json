@@ -12,7 +12,7 @@
     "@coinbase/x402": "^0.5.1",
     "@modelcontextprotocol/sdk": "^1.20.2",
     "mcp-handler": "^1.0.3",
-    "next": "15.5.2",
+    "next": "15.5.7",
     "viem": "^2.37.3",
     "x402": "^0.6.6",
     "x402-next": "^0.6.5",

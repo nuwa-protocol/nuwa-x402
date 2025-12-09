@@ -9,6 +9,6 @@
     "typecheck": "pnpm -C examples/nextjs typecheck"
   },
   "devDependencies": {
-    "next": "15.5.2"
+    "next": "15.5.7"
   }
 }
